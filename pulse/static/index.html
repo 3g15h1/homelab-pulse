@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pulse · homelab</title>
+<meta name="theme-color" content="#09090b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pulse">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<style>
+  :root {
+    --bg: #09090b; --card: #131316; --card2: #18181c; --line: rgba(255,255,255,.06); --line2: rgba(255,255,255,.1);
+    --text: #ececef; --dim: #8b8b94; --faint: #55555d;
+    --accent: #a5b4fc; --accent-t: rgba(165,180,252,.14);
+    --ok: #86efac; --ok-t: rgba(134,239,172,.12); --warn: #fcd34d; --warn-t: rgba(252,211,77,.12);
+    --bad: #f87171; --bad-t: rgba(248,113,113,.13);
+    --r: 18px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased;
+         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  .num { font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 18px 20px 40px; }
+
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 17px; letter-spacing: .2px; }
+  .brand svg { width: 34px; height: 20px; }
+  .brand .ecg { stroke: var(--accent); stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round;
+                stroke-dasharray: 60 140; animation: ecg 2.4s linear infinite; }
+  @keyframes ecg { from { stroke-dashoffset: 200; } to { stroke-dashoffset: 0; } }
+  .brand small { color: var(--dim); font-weight: 450; font-size: 13px; }
+  .hdr-right { margin-left: auto; display: flex; gap: 18px; align-items: center; color: var(--dim); flex-wrap: wrap; }
+  .hdr-right b { color: var(--text); font-weight: 550; }
+  .live { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
+  .live i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .live.on i { background: var(--ok); animation: beat 2s ease-in-out infinite; }
+  @keyframes beat { 0%,100% { box-shadow: 0 0 0 0 rgba(134,239,172,.5); } 50% { box-shadow: 0 0 0 5px rgba(134,239,172,0); } }
+
+  .banner { display: none; align-items: center; gap: 10px; border: 1px solid var(--line2); background: var(--card);
+            border-radius: 12px; padding: 9px 14px; margin-bottom: 14px; color: var(--dim); font-size: 13px; }
+  .banner.show { display: flex; }
+  .banner i { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
+  .banner b { color: var(--text); font-weight: 550; }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 2.1fr) minmax(300px, 1fr); gap: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+  @media (max-width: 1100px) { .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) { .cards { grid-template-columns: 1fr; } .wrap { padding: 12px 12px 30px; } .hdr-right { gap: 12px; font-size: 13px; } }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 16px 14px; min-width: 0; }
+  .card h2 { font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--dim);
+             margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .tag { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+  .tag { font-size: 11px; color: var(--dim); border: 1px solid var(--line2); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .tag.demo { color: var(--warn); border-color: rgba(252,211,77,.25); }
+  .muted { color: var(--dim); }
+  .faint { color: var(--faint); }
+
+  /* map */
+  .mapcard { position: relative; padding: 0; overflow: hidden; }
+  .mapcard h2 { position: absolute; left: 16px; top: 14px; z-index: 2; }
+  .mapbox { position: relative; }
+  #map { display: block; width: 100%; height: auto; }
+  #particles { position: absolute; inset: 0; pointer-events: none; }
+  .link { fill: none; stroke: rgba(255,255,255,.07); stroke-width: 1.2; }
+  .link.down { stroke-dasharray: 3 5; stroke: rgba(255,255,255,.05); }
+  .link.bad { stroke: rgba(248,113,113,.35); stroke-dasharray: 3 5; }
+  .node { cursor: pointer; outline: none; }
+  .node:focus-visible .disc { stroke: var(--accent); stroke-width: 2; }
+  .node .disc { fill: var(--card2); stroke: var(--line2); stroke-width: 1; transition: stroke .3s; }
+  .node:hover .disc, .node.sel .disc { stroke: rgba(165,180,252,.55); }
+  .node .glyph { fill: none; stroke: var(--dim); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: stroke .4s; }
+  .node.busy .glyph { stroke: var(--accent); }
+  .node .track { fill: none; stroke: rgba(255,255,255,.05); }
+  .node .cpu { fill: none; stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray .9s ease, stroke .4s; }
+  .node .mem { fill: none; stroke: rgba(236,236,239,.28); stroke-linecap: round; transition: stroke-dasharray .9s ease; }
+  .node.busy .cpu { filter: drop-shadow(0 0 5px rgba(165,180,252,.85)); animation: breathe 1.6s ease-in-out infinite; }
+  .node.hot .cpu { stroke: var(--warn); filter: drop-shadow(0 0 5px rgba(252,211,77,.8)); }
+  @keyframes breathe { 50% { opacity: .55; } }
+  .node.off { opacity: .38; }
+  .node.off .disc { stroke-dasharray: 3 3; }
+  .node .name { fill: var(--text); font-size: 12.5px; font-weight: 560; }
+  .node .sub { fill: var(--dim); font-size: 10.5px; }
+  .node .dot { stroke: var(--card); stroke-width: 2; }
+  .node .svc { stroke: none; }
+  .svc.up { fill: rgba(134,239,172,.75); } .svc.down { fill: var(--bad); } .svc.unk { fill: var(--faint); }
+  .dot.up { fill: var(--ok); } .dot.down { fill: var(--bad); } .dot.unk { fill: var(--faint); }
+  .legend { position: absolute; left: 16px; bottom: 12px; display: flex; gap: 14px; font-size: 11px; color: var(--faint); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 14px; height: 2px; border-radius: 2px; display: inline-block; }
+
+  /* drawer */
+  .drawer { position: absolute; top: 10px; right: 10px; bottom: 10px; width: min(330px, calc(100% - 20px)); z-index: 5;
+            background: rgba(15,15,18,.96); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+            border: 1px solid var(--line2); border-radius: 16px; padding: 16px; overflow: auto;
+            transform: translateX(calc(100% + 20px)); transition: transform .28s cubic-bezier(.2,.8,.2,1); }
+  .drawer.open { transform: none; }
+  .drawer .x { position: absolute; right: 10px; top: 8px; background: none; border: 0; color: var(--dim); font-size: 22px; cursor: pointer; padding: 4px 8px; }
+  .drawer h3 { margin: 0 0 2px; font-size: 17px; font-weight: 620; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 14px 0; font-size: 13px; }
+  .kv dt { color: var(--dim); } .kv dd { margin: 0; text-align: right; }
+  .spark-block { margin: 14px 0 6px; }
+  .spark-block .lbl { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+  .spark-block svg { width: 100%; height: 46px; display: block; }
+
+  /* host */
+  .big { font-size: 30px; font-weight: 600; letter-spacing: -.5px; line-height: 1.1; }
+  .row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .bar { height: 5px; border-radius: 4px; background: rgba(255,255,255,.06); overflow: hidden; margin: 5px 0 10px; }
+  .bar i { display: block; height: 100%; background: rgba(236,236,239,.45); border-radius: 4px; transition: width .8s ease; }
+  .bar.hi i { background: var(--warn); }
+  .sect { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .mini { font-size: 12.5px; }
+  .hostSpark { width: 100%; height: 54px; display: block; margin: 8px 0 12px; }
+  .nodeblk + .nodeblk { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line2); }
+  .nodeblk h4 { margin: 0 0 8px; font-size: 13px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+  .nodeblk.off { opacity: .5; }
+  .grp { font-size: 11px; letter-spacing: .5px; text-transform: uppercase; color: var(--faint); margin: 12px 0 2px; }
+  .grp:first-child { margin-top: 0; }
+  #svcBody { max-height: 460px; overflow: auto; }
+
+  /* lists */
+  .list { display: flex; flex-direction: column; }
+  .item { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .item:first-child { border-top: 0; }
+  .item .s { width: 8px; height: 8px; border-radius: 50%; }
+  .s.up { background: var(--ok); } .s.down { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-t); } .s.unk { background: var(--faint); }
+  .item .d { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lat { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+  .lat svg { width: 46px; height: 16px; }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 3px 10px; font-size: 12px;
+          background: rgba(255,255,255,.04); border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
+  .pill.ok { color: var(--ok); background: var(--ok-t); border-color: transparent; }
+
+  /* backups */
+  .chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; margin-top: 10px; }
+  .chip { border-radius: 10px; padding: 6px 8px; background: var(--card2); border: 1px solid var(--line); font-size: 11.5px; min-width: 0; }
+  .chip b { display: block; font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip span { color: var(--dim); }
+  .chip.fresh { border-color: rgba(134,239,172,.16); }
+  .chip.fresh span { color: var(--ok); }
+  .chip.stale span { color: var(--warn); }
+
+  /* activity */
+  .ev { display: grid; grid-template-columns: 8px 1fr auto; gap: 10px; align-items: baseline; padding: 6px 0; font-size: 13px; border-top: 1px solid var(--line); }
+  .ev:first-child { border-top: 0; }
+  .ev i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); transform: translateY(-1px); }
+  .ev.ok i { background: var(--ok); } .ev.bad i { background: var(--bad); } .ev.warn i { background: var(--warn); } .ev.info i { background: var(--accent); }
+  .ev time { color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+  #events { max-height: 330px; overflow: auto; }
+
+  /* ?embed: inside Home Assistant's Proxmox dashboard, which has its own header */
+  body.embed header, body.embed footer { display: none; }
+  body.embed .wrap { padding: 4px 4px 16px; }
+  body.embed .banner { margin-bottom: 10px; }
+  footer { margin-top: 16px; color: var(--faint); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+  footer .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<script>if (new URLSearchParams(location.search).has("embed")) document.body.classList.add("embed");</script>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 68 40" aria-hidden="true"><path d="M2 22 H20 L25 10 L31 32 L36 4 L41 26 L45 22 H66" fill="none" stroke="rgba(165,180,252,.22)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/><path class="ecg" d="M2 22 H20 L25 10 L31 32 L36 4 L41 26 L45 22 H66"/></svg>
+      Pulse <small id="nodeName">homelab</small>
+    </div>
+    <div class="hdr-right">
+      <span class="num" id="clock"></span>
+      <span class="live" id="live"><i></i><span>connecting</span></span>
+    </div>
+  </header>
+
+  <div class="banner" id="banner"><i></i><span id="bannerText"></span></div>
+
+  <div class="grid">
+    <section class="card mapcard">
+      <h2>Live map <span class="tag" id="mapTag" style="display:none"></span></h2>
+      <div class="mapbox" id="mapbox">
+        <svg id="map" role="img" aria-label="Network map of the homelab"></svg>
+        <canvas id="particles"></canvas>
+        <div class="legend"><span><i style="background:var(--accent)"></i>CPU</span><span><i style="background:rgba(236,236,239,.35)"></i>memory</span><span><i style="background:linear-gradient(90deg,var(--accent),rgba(236,236,239,.6))"></i>traffic in / out</span></div>
+      </div>
+      <aside class="drawer" id="drawer" aria-live="polite"><button class="x" id="drawerX" aria-label="Close">×</button><div id="drawerBody"></div></aside>
+    </section>
+
+    <section class="card" id="hostCard">
+      <h2 id="hostTitle">Proxmox host <span class="tag" id="hostTag"></span></h2>
+      <div id="hostBody" class="muted">Waiting for data…</div>
+    </section>
+  </div>
+
+  <div class="cards">
+    <section class="card"><h2>Services <span class="tag" id="svcTag"></span></h2><div id="svcBody" class="list"></div></section>
+    <section class="card"><h2>Backups <span class="tag" id="bkTag"></span></h2><div id="bkBody" class="muted">Waiting for data…</div></section>
+    <section class="card"><h2>Activity <span class="tag">last 24 h</span></h2><div id="events" class="muted">Nothing yet.</div></section>
+  </div>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ---------- formatting ---------- */
+const fmtBytes = (b) => { if (!b) return "0 B"; const u = ["B", "KB", "MB", "GB", "TB"]; const i = Math.min(4, Math.floor(Math.log(b) / Math.log(1024)));
+  const v = b / 1024 ** i; return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${u[i]}`; };
+const fmtRate = (Bps) => { const b = (Bps || 0) * 8; if (b < 1000) return `${b.toFixed(0)} b/s`; if (b < 1e6) return `${(b / 1e3).toFixed(b < 1e4 ? 1 : 0)} kb/s`;
+  if (b < 1e9) return `${(b / 1e6).toFixed(b < 1e7 ? 1 : 0)} Mb/s`; return `${(b / 1e9).toFixed(1)} Gb/s`; };
+const pct = (x) => `${Math.round((x || 0) * 100)}%`;
+const fmtUp = (s) => { if (!s) return "—"; const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`; };
+const ago = (ts, now) => { if (!ts) return "never"; const s = Math.max(0, (now || Date.now() / 1000) - ts);
+  if (s < 45) return "just now"; if (s < 3600) return `${Math.round(s / 60)} min ago`; if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`; };
+const clockOf = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const deg = (v) => v == null ? "—" : `${Math.round(v)}°`;
+
+/* ---------- glyphs (24x24 stroke icons) ---------- */
+const GLYPH = {
+  camera: "M4 8h3l2-2h6l2 2h3v10H4z M12 16a3 3 0 1 0 0-6 3 3 0 0 0 0 6",
+  shield: "M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z M9 12l2 2 4-4",
+  doc: "M7 3h7l4 4v14H7z M14 3v4h4 M10 12h5 M10 16h5",
+  home: "M4 11l8-7 8 7 M6 9.5V20h12V9.5 M10 20v-5h4v5",
+  globe: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18 M3 12h18 M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9",
+  spark: "M12 3v4 M12 17v4 M3 12h4 M17 12h4 M6 6l2.5 2.5 M15.5 15.5L18 18 M6 18l2.5-2.5 M15.5 8.5L18 6",
+  flask: "M9 3h6 M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3 M7.5 15h9",
+  key: "M8 15a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M12 11h9 M18 11v3 M15 11v2",
+  chat: "M4 5h16v11H9l-5 4z M8 9.5h8 M8 12.5h5",
+  brain: "M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 3 3h1V4z M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-3 3h-1V4z",
+  pulse: "M3 12h4l2-5 3 10 2-6 1.5 3H21",
+  box: "M4 7l8-4 8 4v10l-8 4-8-4z M4 7l8 4 8-4 M12 11v10",
+  server: "M4 4h16v6H4z M4 14h16v6H4z M7.5 7h.01 M7.5 17h.01 M11 7h6 M11 17h6",
+  router: "M3 14h18v6H3z M7 17h.01 M11 17h.01 M8 14l-2-6 M16 14l2-6 M9 6a4.5 4.5 0 0 1 6 0",
+  cloud: "M7 18a4 4 0 0 1-.5-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z",
+  film: "M4 5h16v14H4z M8 5v14 M16 5v14 M4 9h4 M4 15h4 M16 9h4 M16 15h4",
+  photo: "M4 6h16v12H4z M4 16l5-5 4 4 2-2 5 5 M15.5 9.5h.01",
+  chart: "M4 20h16 M7 16v-4 M11 16V8 M15 16v-6 M19 16V5",
+  database: "M5 6c0-1.7 3.1-3 7-3s7 1.3 7 3-3.1 3-7 3-7-1.3-7-3z M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6 M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3",
+  terminal: "M4 5h16v14H4z M7.5 9.5l3 2.5-3 2.5 M12.5 15h4",
+  code: "M8.5 7L4 12l4.5 5 M15.5 7L20 12l-4.5 5 M13.5 5l-3 14",
+  lock: "M6 11h12v9H6z M8.5 11V8a3.5 3.5 0 0 1 7 0v3 M12 15v2",
+  flow: "M4 6h5v4H4z M15 14h5v4h-5z M9 8h3a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2 M4 16h5",
+  radio: "M12 13a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3 M8.5 15.5a5 5 0 0 1 0-7 M15.5 8.5a5 5 0 0 1 0 7 M6 18a8.5 8.5 0 0 1 0-12 M18 6a8.5 8.5 0 0 1 0 12",
+  sync: "M19 8a7.5 7.5 0 0 0-13.5 1 M5 16a7.5 7.5 0 0 0 13.5-1 M19 4v4h-4 M5 20v-4h4",
+  disk: "M4 6h16v5H4z M4 13h16v5H4z M16.5 8.5h.01 M16.5 15.5h.01",
+  cube: "M12 3l8 4.5v9L12 21l-8-4.5v-9z M4 7.5l8 4.5 8-4.5 M12 12v9",
+};
+
+/* ---------- state ---------- */
+let S = null;                  // latest snapshot
+let selected = null;           // selected node key
+let lastMsg = 0;
+let mapKey = "";               // node set + orientation; rebuild the SVG when it changes
+let geom = { W: 1000, H: 620, nodes: {}, links: [] };
+
+/* ---------- map layout ---------- */
+// Keys: "internet", "router", "node:<name>" for Proxmox nodes, the VMID (number) for guests.
+const nodeKey = (name) => `node:${name}`;
+function computeLayout(nodeList, guests, portrait) {
+  const nodes = {}, links = [];
+  const groups = nodeList.map((n) => ({ name: n.name, guests: guests.filter((g) => g.node === n.name) }));
+  let W, H;
+  if (!portrait) {
+    // one band per Proxmox node, stacked; each node's guests on a right-facing arc, evenly spaced in y
+    W = 1000;
+    const gap = 66, pad = 52, single = groups.length === 1;
+    const bands = groups.map((gr) => Math.max(single ? 560 : 170, pad * 2 + gap * Math.max(0, gr.guests.length - 1)));
+    H = bands.reduce((a, b) => a + b, 0) || 560;
+    let top = 0;
+    groups.forEach((gr, gi) => {
+      const bh = bands[gi], host = { x: 360, y: top + bh / 2 }, n = gr.guests.length;
+      nodes[nodeKey(gr.name)] = { ...host, r: single ? 44 : 36, label: single ? "below" : "below" };
+      gr.guests.forEach((g, i) => {
+        const u = n > 1 ? -1 + 2 * i / (n - 1) : 0;
+        nodes[g.vmid] = { x: host.x + 150 + 290 * Math.sqrt(Math.max(0, 1 - u * u)), y: host.y + u * (bh / 2 - pad), r: 24, label: "right" };
+      });
+      top += bh;
+    });
+    nodes.internet = { x: 60, y: H / 2, r: 22 }; nodes.router = { x: 190, y: H / 2, r: 22 };
+  } else {
+    // phones: Internet → Router across the top, then per node: the node, its guests in two columns
+    W = 420;
+    nodes.internet = { x: 70, y: 98, r: 22, label: "below" }; nodes.router = { x: 210, y: 98, r: 22, label: "below" };
+    let y = 225;
+    for (const gr of groups) {
+      nodes[nodeKey(gr.name)] = { x: 210, y, r: groups.length === 1 ? 44 : 38, label: "below" };
+      const rows = Math.ceil(gr.guests.length / 2), top = y + 155, gap = 112;
+      gr.guests.forEach((g, i) => { nodes[g.vmid] = { x: i % 2 ? 330 : 90, y: top + gap * Math.floor(i / 2), r: 24, label: "below" }; });
+      y = top + gap * Math.max(0, rows - 1) + (rows ? 175 : 40);
+    }
+    H = y - 60;
+  }
+  nodes.internet.label ||= "below"; nodes.router.label ||= "below";
+  links.push({ from: "internet", to: "router", key: "internet" });
+  for (const gr of groups) {
+    links.push({ from: "router", to: nodeKey(gr.name), key: nodeKey(gr.name) });
+    gr.guests.forEach((g) => links.push({ from: nodeKey(gr.name), to: g.vmid, key: g.vmid }));
+  }
+  for (const l of links) {           // quadratic curve, bowed a little for a hand-drawn feel
+    const a = nodes[l.from], b = nodes[l.to];
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    const bow = typeof l.key === "number" ? (portrait ? 0.06 : 0.12) * (b.x < a.x ? -1 : 1) : 0;
+    l.p0 = { x: a.x + dx / len * a.r, y: a.y + dy / len * a.r };
+    l.p2 = { x: b.x - dx / len * b.r, y: b.y - dy / len * b.r };
+    l.p1 = { x: mx - dy * bow, y: my + dx * bow };
+    // phones: links to the 2nd+ node would cut straight through the 1st; swing them out along the right edge
+    if (portrait && l.from === "router" && l.to !== nodeKey(groups[0]?.name)) l.p1 = { x: 2 * (W - 16) - a.x, y: my };
+    l.len = len;
+  }
+  return { W, H, nodes, links };
+}
+const bez = (l, t) => { const u = 1 - t;
+  return { x: u * u * l.p0.x + 2 * u * t * l.p1.x + t * t * l.p2.x, y: u * u * l.p0.y + 2 * u * t * l.p1.y + t * t * l.p2.y }; };
+
+function el(tag, attrs = {}, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+function buildMap() {
+  const svg = $("map");
+  const portrait = $("mapbox").clientWidth < 640;
+  const ids = S.nodes.map((n) => n.name).join(",") + "/" + S.guests.map((g) => `${g.vmid}@${g.node}:${probesFor(g.vmid).length}`).join(",");
+  const key = `${ids}|${portrait}`;
+  if (key === mapKey) return;
+  mapKey = key;
+  geom = computeLayout(S.nodes, S.guests, portrait);
+  svg.setAttribute("viewBox", `0 0 ${geom.W} ${geom.H}`);
+  svg.innerHTML = "";
+  const gl = el("g", {}, svg);
+  for (const l of geom.links)
+    l.elem = el("path", { class: "link", d: `M${l.p0.x},${l.p0.y} Q${l.p1.x},${l.p1.y} ${l.p2.x},${l.p2.y}` }, gl);
+  const gn = el("g", {}, svg);
+  const mk = (key, glyph, name, sub) => {
+    const n = geom.nodes[key];
+    const g = el("g", { class: "node", transform: `translate(${n.x},${n.y})`, tabindex: 0, role: "button", "data-key": key }, gn);
+    const rc = n.r + 5, rm = n.r + 9;
+    el("circle", { class: "track", r: rc, "stroke-width": 3 }, g);
+    n.cpu = el("circle", { class: "cpu", r: rc, "stroke-width": 3, transform: "rotate(-90)", "stroke-dasharray": `0 ${2 * Math.PI * rc}` }, g);
+    n.mem = el("circle", { class: "mem", r: rm, "stroke-width": 1.5, transform: "rotate(-90)", "stroke-dasharray": `0 ${2 * Math.PI * rm}` }, g);
+    n.rc = rc; n.rm = rm;
+    el("circle", { class: "disc", r: n.r }, g);
+    const s = n.r > 30 ? 1.25 : 0.85;
+    el("path", { class: "glyph", d: GLYPH[glyph] || GLYPH.box, transform: `translate(${-12 * s},${-12 * s}) scale(${s})` }, g);
+    n.dot = el("circle", { class: "dot unk", r: 4.5, cx: n.r * 0.72, cy: -n.r * 0.72, style: "display:none" }, g);
+    let tx, ty, anchor;
+    if (n.label === "right") { tx = rm + 9; ty = -2; anchor = "start"; }
+    else { tx = 0; ty = rm + 16; anchor = "middle"; }
+    n.name = el("text", { class: "name", x: tx, y: ty, "text-anchor": anchor }, g); n.name.textContent = name;
+    n.sub = el("text", { class: "sub", x: tx, y: ty + 14, "text-anchor": anchor }, g); n.sub.textContent = sub;
+    n.svcs = [];
+    const nsvc = typeof key === "number" ? Math.min(4, probesFor(key).length) : 0;
+    for (let i = 0; i < nsvc; i++) {          // one small dot per discovered service, under the label
+      const x0 = anchor === "start" ? tx + 3 : tx - (nsvc - 1) * 4.5;
+      n.svcs.push(el("circle", { class: "svc unk", r: 2.6, cx: x0 + i * 9, cy: ty + 25 }, g));
+    }
+    n.g = g;
+    g.addEventListener("click", () => select(key));
+    g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(key); } });
+  };
+  mk("internet", "cloud", "Internet", "");
+  mk("router", "router", S.router?.name || "Router", S.router?.ip || "");
+  for (const n of S.nodes) mk(nodeKey(n.name), "server", n.name, "Proxmox");
+  for (const g of S.guests) mk(g.vmid, g.icon, g.name, g.role);
+  sizeCanvas();
+}
+
+function setRing(c, r, frac) { const C = 2 * Math.PI * r; c.setAttribute("stroke-dasharray", `${Math.max(0, Math.min(1, frac)) * C} ${C}`); }
+
+function probesFor(target) { return (S.probes || []).filter((p) => String(p.target) === String(target)); }
+function healthOf(target) {
+  const ps = probesFor(target); if (!ps.length) return null;
+  if (ps.some((p) => p.up === false)) return "down"; if (ps.every((p) => p.up)) return "up"; return "unk";
+}
+
+const stateOf = (p) => p.up === true ? "up" : p.up === false ? "down" : "unk";
+function updateMap() {
+  buildMap();
+  const N = geom.nodes;
+  const setDot = (key, target) => { const h = healthOf(target); const d = N[key]?.dot; if (!d) return;
+    d.style.display = h ? "" : "none"; if (h) d.setAttribute("class", `dot ${h}`); };
+  for (const node of S.nodes) {
+    const k = nodeKey(node.name), n = N[k]; if (!n) continue;
+    setRing(n.cpu, n.rc, node.cpu); setRing(n.mem, n.rm, node.mem / (node.maxmem || 1));
+    n.sub.textContent = node.online ? `Proxmox · ${pct(node.cpu)} CPU` : "Proxmox · offline";
+    n.g.classList.toggle("busy", node.online && node.cpu > 0.5);
+    n.g.classList.toggle("off", !node.online);
+    setDot(k, node.name);
+  }
+  setDot("router", "router"); setDot("internet", "internet");
+  const inet = probesFor("internet")[0];
+  N.internet.sub.textContent = inet ? (inet.up ? `${Math.round(inet.latency_ms)} ms` : inet.up === false ? "unreachable" : "…") : "";
+  for (const g of S.guests) {
+    const n = N[g.vmid]; if (!n) continue;
+    setRing(n.cpu, n.rc, g.running ? g.cpu : 0); setRing(n.mem, n.rm, g.running ? g.mem / (g.maxmem || 1) : 0);
+    n.g.classList.toggle("off", !g.running);
+    n.g.classList.toggle("busy", g.running && g.cpu > 0.5);
+    n.g.classList.toggle("hot", g.running && g.cpu > 0.88);
+    n.sub.textContent = g.running ? (g.cpu > 0.5 ? `${g.role} · working ${pct(g.cpu)}` : g.role) : `${g.role} · stopped`;
+    setDot(g.vmid, g.vmid);
+    probesFor(g.vmid).slice(0, n.svcs.length).forEach((p, i) => n.svcs[i].setAttribute("class", `svc ${stateOf(p)}`));
+  }
+  for (const l of geom.links) {
+    const g = typeof l.key === "number" ? S.guests.find((x) => x.vmid === l.key) : null;
+    const nd = typeof l.key === "string" && l.key.startsWith("node:") ? S.nodes.find((x) => nodeKey(x.name) === l.key) : null;
+    const h = healthOf(g ? g.vmid : nd ? nd.name : l.key);
+    l.elem.setAttribute("class", "link" + ((g && !g.running) || (nd && !nd.online) ? " down" : h === "down" ? " bad" : ""));
+    if (g) { l.rin = g.net_in; l.rout = g.net_out; }
+    else if (nd) { l.rin = nd.net_in; l.rout = nd.net_out; }
+    else { l.rin = S.nodes.reduce((a, n) => a + n.net_in, 0); l.rout = S.nodes.reduce((a, n) => a + n.net_out, 0); }
+    if (l.key === "internet" && inet && inet.up === false) { l.rin = l.rout = 0; }
+  }
+  for (const k of Object.keys(N)) N[k].g?.classList.toggle("sel", String(k) === String(selected));
+}
+
+/* ---------- particles ---------- */
+const cv = $("particles"), cx = cv.getContext("2d");
+let parts = [], lastFrame = performance.now(), scale = 1;
+function sizeCanvas() {
+  const r = $("map").getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+  cv.style.width = `${r.width}px`; cv.style.height = `${r.height}px`;
+  scale = r.width / geom.W; cx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+}
+// bytes/s -> packets per second on screen: log scale so 1 kB/s is visible and 100 MB/s doesn't flood
+const pps = (Bps) => Math.max(0, Math.min(14, (Math.log10((Bps || 0) + 1) - 2.2) * 2.1));
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+function frame(now) {
+  const dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
+  cx.clearRect(0, 0, geom.W, geom.H);
+  if (!reduceMotion && S && !document.hidden) {
+    for (const l of geom.links) {
+      for (const dir of [1, -1]) {
+        const k = dir > 0 ? "accIn" : "accOut";
+        l[k] = (l[k] || 0) + pps(dir > 0 ? l.rin : l.rout) * dt;
+        while (l[k] >= 1) { l[k] -= 1; parts.push({ l, dir, t: 0, dur: 0.9 + l.len / 420, j: (Math.random() - 0.5) * 3 }); }
+      }
+    }
+    parts = parts.filter((p) => (p.t += dt / p.dur) < 1);
+    for (const p of parts) {
+      const t = p.dir > 0 ? p.t : 1 - p.t, pt = bez(p.l, t);
+      const fade = Math.min(1, p.t * 6, (1 - p.t) * 6);
+      cx.globalAlpha = 0.85 * fade;
+      cx.fillStyle = p.dir > 0 ? "#a5b4fc" : "#ececef";
+      cx.beginPath(); cx.arc(pt.x + p.j * 0.3, pt.y + p.j * 0.3, p.dir > 0 ? 2.1 : 1.7, 0, 7); cx.fill();
+    }
+    cx.globalAlpha = 1;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+addEventListener("resize", () => { if (S) { mapKey = ""; updateMap(); } });
+
+/* ---------- sparklines ---------- */
+function sparkPath(vals, w, h, max) {
+  const v = vals.filter((x) => x != null); if (v.length < 2) return { line: "", area: "" };
+  const m = max ?? Math.max(...v, 1e-9), n = vals.length;
+  let line = "", started = false;
+  vals.forEach((x, i) => { if (x == null) { started = false; return; }
+    const px = (i / (n - 1)) * w, py = h - 2 - (x / m) * (h - 4); line += `${started ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)} `; started = true; });
+  const first = vals.findIndex((x) => x != null), last = vals.length - 1 - [...vals].reverse().findIndex((x) => x != null);
+  const area = line ? `${line} L${(last / (n - 1) * w).toFixed(1)},${h} L${(first / (n - 1) * w).toFixed(1)},${h} Z` : "";
+  return { line, area };
+}
+function sparkSvg(vals, { w = 300, h = 46, max, color = "#a5b4fc", id = "g" } = {}) {
+  const { line, area } = sparkPath(vals, w, h, max);
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1">
+    <stop offset="0" stop-color="${color}" stop-opacity=".22"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    <path d="${area}" fill="url(#${id})"/><path d="${line}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+
+/* ---------- drawer ---------- */
+function select(key) {             // the drawer then refreshes with every live update (see render)
+  selected = selected === key ? null : key;
+  $("drawer").classList.toggle("open", selected != null);
+  if (selected != null) renderDrawer();
+  if (S) updateMap();
+}
+$("drawerX").onclick = () => select(selected);
+addEventListener("keydown", (e) => { if (e.key === "Escape" && selected != null) select(selected); });
+
+async function renderDrawer() {
+  if (selected == null || !S) return;
+  const key = selected, body = $("drawerBody");
+  const probeRows = (target) => probesFor(target).map((p) =>
+    `<div class="item"><span class="s ${stateOf(p)}"></span><div>${esc(p.name)}${p.port ? ` <span class="faint">:${p.port}</span>` : ""}<div class="d">${esc(p.detail)}</div></div><div class="lat num">${p.latency_ms != null && !p.paused ? Math.round(p.latency_ms) + " ms" : ""}</div></div>`).join("");
+  if (key === "internet" || key === "router") {
+    const r = key === "router";
+    body.innerHTML = `<h3>${r ? esc(S.router?.name || "Router") : "Internet"}</h3><div class="muted">${r ? esc(S.router?.ip || "") : "reachability from the lab"}</div>
+      <div class="sect list">${probeRows(key) || '<span class="muted">No checks configured.</span>'}</div>
+      <div class="spark-block"><div class="lbl"><span>Latency, last ${probesFor(key)[0]?.history.length || 0} checks</span></div>${sparkSvg(probesFor(key)[0]?.history || [], { id: "dl" })}</div>`;
+    return;
+  }
+  const isNode = String(key).startsWith("node:");
+  const n = isNode ? S.nodes.find((x) => nodeKey(x.name) === key) : null;
+  const g = isNode ? null : S.guests.find((x) => String(x.vmid) === String(key));
+  let hist = null;
+  try { const r = await fetch(`/api/history/${encodeURIComponent(isNode ? (n?.name ?? "") : key)}`); if (r.ok) hist = await r.json(); }
+  catch { /* keep going without sparklines */ }
+  if (key !== selected) return;
+  if (isNode ? !n : !g) { body.innerHTML = '<span class="muted">Gone.</span>'; return; }
+  const bk = g && S.backups?.guests.find((b) => b.vmid === g.vmid);
+  const last = (a) => (a && a.length ? a[a.length - 1] : 0);
+  const span = hist && hist.t.length > 1 ? Math.round((hist.t[hist.t.length - 1] - hist.t[0]) / 60) : 0;
+  const kv = isNode ? [
+    ["Status", n.online ? "online" : "offline"], ["Address", esc(n.ip || "—")],
+    ["CPU", `${pct(n.cpu)} of ${n.cpus} threads`], ["Memory", `${fmtBytes(n.mem)} / ${fmtBytes(n.maxmem)}`],
+    ["Load", n.load.map((x) => x.toFixed(2)).join("  ") || "—"], ["Uptime", fmtUp(n.uptime)], ["Version", n.pve ? `PVE ${esc(n.pve)}` : "—"],
+    ["Kernel", esc(n.kernel || "—")], ["Guests", `${S.guests.filter((x) => x.node === n.name && x.running).length} running of ${S.guests.filter((x) => x.node === n.name).length}`],
+  ] : [
+    ["Status", g.running ? "running" : esc(g.status)], ["Address", esc((g.ips && g.ips.length ? g.ips : [g.ip || "—"]).join(", "))],
+    ["Node", esc(g.node)], ["Type", g.type === "qemu" ? "VM" : "Container"],
+    ["CPU", `${pct(g.cpu)} of ${g.cores} core${g.cores === 1 ? "" : "s"}`], ["Memory", `${fmtBytes(g.mem)} / ${fmtBytes(g.maxmem)}`],
+    ["Disk", !g.maxdisk ? "—" : g.disk ? `${fmtBytes(g.disk)} / ${fmtBytes(g.maxdisk)}` : `${fmtBytes(g.maxdisk)} allocated`], ["Network", `↓ ${fmtRate(g.net_in)}  ↑ ${fmtRate(g.net_out)}`],
+    ["Uptime", fmtUp(g.uptime)], ["Last backup", bk?.ts ? `${ago(bk.ts, S.now)} · ${fmtBytes(bk.size)}` : "none yet"],
+    ...(g.services && g.services.length ? [["Services", g.services.map((x) => `${esc(x.product)} <span class="faint">:${x.port}</span>`).join("<br>")]] : []),
+    ...(g.tags && g.tags.length ? [["Tags", g.tags.map(esc).join(", ")]] : []),
+  ];
+  body.innerHTML = `<h3>${esc(isNode ? n.name : g.name)} <span class="faint" style="font-weight:450;font-size:13px">${isNode ? "" : "#" + g.vmid}</span></h3>
+    <div class="muted">${isNode ? esc(n.model) : esc(g.role)}</div>
+    <dl class="kv num">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    ${hist ? `<div class="spark-block"><div class="lbl"><span>CPU · last ${span} min</span><span class="num">${pct(last(hist.cpu))}</span></div>${sparkSvg(hist.cpu, { max: 1, id: "dc" })}</div>
+    <div class="spark-block"><div class="lbl"><span>Network in</span><span class="num">${fmtRate(last(hist.net_in))}</span></div>${sparkSvg(hist.net_in, { id: "dn" })}</div>
+    <div class="spark-block"><div class="lbl"><span>Network out</span><span class="num">${fmtRate(last(hist.net_out))}</span></div>${sparkSvg(hist.net_out, { color: "#ececef", id: "do" })}</div>` : ""}
+    ${probesFor(isNode ? n.name : g.vmid).length ? `<div class="sect list">${probeRows(isNode ? n.name : g.vmid)}</div>` : ""}`;
+}
+
+/* ---------- cards ---------- */
+function storageRows(list) {
+  return list.map((s) => { const f = s.used / (s.total || 1);
+    return `<div class="row mini"><span>${esc(s.id)}</span><span class="muted num">${fmtBytes(s.used)} / ${fmtBytes(s.total)}</span></div><div class="bar${f > 0.85 ? " hi" : ""}"><i style="width:${(f * 100).toFixed(1)}%"></i></div>`; }).join("");
+}
+function nodeBlock(n, multi) {
+  if (!n.online) return `<div class="nodeblk off"><h4>${esc(n.name)} <span class="tag">offline</span></h4></div>`;
+  const guests = S.guests.filter((g) => g.node === n.name), running = guests.filter((g) => g.running).length;
+  const memf = n.mem / (n.maxmem || 1);
+  const disks = n.disks.map((d) => { const okh = /PASSED|OK/i.test(d.health);
+    return `<div class="row mini" style="padding:3px 0"><span>${esc(d.model)} <span class="faint">${esc(d.type.toUpperCase())}</span></span><span class="${okh ? "muted" : ""}" style="${okh ? "" : "color:var(--bad)"}">${okh ? "healthy" : esc(d.health)}${d.wear_used != null ? ` · ${d.wear_used}% worn` : ""}</span></div>`; }).join("");
+  return `<div class="nodeblk">${multi ? `<h4>${esc(n.name)} <span class="faint" style="font-weight:450">${esc(n.ip || "")}</span>${n.error ? ` <span style="color:var(--bad);font-weight:450">${esc(n.error)}</span>` : ""}</h4>` : ""}
+    <div class="row"><div><div class="big num">${pct(n.cpu)}</div><div class="muted mini">CPU · ${n.cpus} threads</div></div>
+      <div style="text-align:right"><div class="big num">${fmtBytes(n.mem).replace(" ", "<small style='font-size:15px;color:var(--dim)'> ")}</small></div><div class="muted mini">of ${fmtBytes(n.maxmem)} RAM</div></div></div>
+    <div class="hostSpark">${sparkSvg(n.cpu_history, { w: 300, h: 54, max: Math.max(0.25, ...n.cpu_history), id: "hs" + n.name.replace(/\W/g, "") })}</div>
+    <div class="bar"><i style="width:${(memf * 100).toFixed(1)}%"></i></div>
+    <div class="row mini muted"><span>${running} of ${guests.length} guests running</span><span class="num">load ${n.load.map((x) => x.toFixed(2)).join(" ")}</span></div>
+    <div class="row mini muted"><span>up ${fmtUp(n.uptime)}</span><span>${esc(n.model.replace(/\(R\)|\(TM\)| CPU/g, ""))}</span></div>
+    ${n.storage.length ? `<div class="sect">${storageRows(n.storage)}</div>` : ""}
+    ${disks ? `<div class="sect">${disks}</div>` : ""}</div>`;
+}
+function renderHost() {
+  const src = S.sources.pve, multi = S.nodes.length > 1, pve = S.nodes.find((n) => n.pve)?.pve;
+  $("hostTitle").firstChild.textContent = multi ? `Proxmox cluster · ${S.nodes.length} nodes ` : "Proxmox host ";
+  $("hostTag").outerHTML = `<span id="hostTag" class="tag${src.mode === "demo" ? " demo" : ""}">${src.mode === "demo" ? "demo data" : (pve ? `PVE ${esc(pve)}` : "")}</span>`;
+  if (!S.nodes.length) { $("hostBody").innerHTML = `<span class="muted">${esc(src.error || "Waiting for Proxmox…")}</span>`; return; }
+  const shared = (S.shared_storage || []).length ? `<div class="nodeblk"><h4>Shared storage</h4>${storageRows(S.shared_storage)}</div>` : "";
+  $("hostBody").innerHTML = S.nodes.map((n) => nodeBlock(n, multi)).join("") + shared;
+}
+
+function renderServices() {
+  const ps = S.probes || [];
+  const live = ps.filter((p) => !p.paused), down = live.filter((p) => p.up === false).length;
+  $("svcTag").textContent = ps.length ? (down ? `${down} down` : `${live.filter((p) => p.up).length}/${live.length} up`) : "";
+  $("svcTag").style.color = down ? "var(--bad)" : "";
+  const row = (p) => {
+    const h = p.history.slice(-20), m = Math.max(5, ...h.filter((x) => x != null));
+    const bars = h.map((v, i) => v == null ? `<rect x="${i * 2.4}" y="2" width="1.6" height="14" fill="#f87171" opacity=".7"/>`
+      : `<rect x="${i * 2.4}" y="${16 - Math.max(1.5, v / m * 14)}" width="1.6" height="${Math.max(1.5, v / m * 14)}" fill="#8b8b94" opacity=".55"/>`).join("");
+    return `<div class="item"><span class="s ${stateOf(p)}"></span>
+      <div style="min-width:0">${esc(p.name)}${p.port && p.source !== "builtin" ? ` <span class="faint">:${p.port}</span>` : ""}<div class="d">${esc(p.detail)}${p.up === false && p.since ? " · " + ago(p.since, S.now) : ""}${p.source === "discovered" ? ' · <span class="faint">auto</span>' : ""}</div></div>
+      <div class="lat num"><svg viewBox="0 0 48 16">${bars}</svg><span style="min-width:44px;text-align:right">${p.latency_ms != null && !p.paused ? (p.latency_ms < 10 ? p.latency_ms.toFixed(1) : Math.round(p.latency_ms)) + " ms" : "—"}</span></div></div>`;
+  };
+  const names = Object.fromEntries(S.guests.map((g) => [g.vmid, g.name]));
+  const groups = new Map([["Network & Proxmox", []]]);
+  for (const p of ps) {
+    const label = typeof p.target === "number" ? (names[p.target] || p.guest || `#${p.target}`) : "Network & Proxmox";
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(p);
+  }
+  $("svcBody").innerHTML = [...groups].filter(([, v]) => v.length)
+    .map(([label, v]) => `<div class="grp">${esc(label)}</div>${v.map(row).join("")}`).join("") || '<span class="muted">Discovering services…</span>';
+}
+
+function renderBackups() {
+  const b = S.backups, src = S.sources.pve;
+  if (!b) { $("bkBody").innerHTML = '<span class="muted">Waiting for Proxmox…</span>'; return; }
+  const lr = b.last_run;
+  $("bkTag").outerHTML = `<span id="bkTag" class="tag${src.mode === "demo" ? " demo" : ""}">${src.mode === "demo" ? "demo data" : "vzdump"}</span>`;
+  const total = b.guests.length;
+  const head = lr ? `<div class="row"><div><div class="big num" style="color:${lr.ok ? "var(--text)" : "var(--bad)"}">${b.fresh}<span class="muted" style="font-size:17px">/${total}</span></div>
+      <div class="muted mini">guests backed up in the last day</div></div>
+      <div style="text-align:right" class="mini"><span class="pill ${lr.ok ? "ok" : ""}" style="${lr.ok ? "" : "color:var(--bad)"}">${lr.ok ? "last run OK" : esc(lr.status)}</span>
+      <div class="muted" style="margin-top:6px">${lr.start ? `${new Date(lr.start * 1000).toLocaleDateString([], { weekday: "short" })} ${clockOf(lr.start)}` : ""}${lr.end ? ` · ${Math.round((lr.end - lr.start) / 60)} min` : ""}</div></div></div>`
+    : '<div class="muted">No backup runs found.</div>';
+  const chips = b.guests.map((g) => `<div class="chip ${g.fresh ? "fresh" : g.ts || g.error ? "stale" : ""}"${g.error ? ` title="${esc(g.error)}"` : ""}><b>${esc(g.name)}</b><span>${g.error ? "failed" : g.ts ? ago(g.ts, S.now) : "not yet"}</span></div>`).join("");
+  const perNode = b.runs.length > 1 ? `<div class="mini muted" style="margin-top:8px">${b.runs.map((r) => `${esc(r.node)}: <span style="color:${r.ok ? "var(--ok)" : "var(--bad)"}">${r.ok ? "OK" : esc(r.status)}</span>`).join(" · ")}</div>` : "";
+  $("bkBody").innerHTML = `${head}${perNode}<div class="chips">${chips}</div><div class="muted mini" style="margin-top:10px">${fmtBytes(b.total_bytes)} in the latest set</div>`;
+}
+
+function renderEvents() {
+  const ev = S.events || [];
+  $("events").innerHTML = ev.length ? ev.map((e) => `<div class="ev ${esc(e.level)}"><i></i><span>${esc(e.text)}</span><time class="num">${ago(e.ts, S.now)}</time></div>`).join("")
+    : '<span class="muted">Quiet. Nothing happened in the last day.</span>';
+}
+
+function renderChrome() {
+  const src = S.sources, demo = src.pve.mode === "demo";
+  $("nodeName").textContent = S.nodes.length === 1 ? `${S.nodes[0].name} · homelab` : S.nodes.length ? `${S.nodes.length} nodes · homelab` : "homelab";
+  $("banner").classList.toggle("show", demo);
+  $("bannerText").innerHTML = demo ? "<b>Demo mode:</b> a simulated two-node cluster (PULSE_PVE=demo). Set PULSE_PVE=live to watch your own lab." : "";
+  $("mapTag").style.display = src.pve.mode === "demo" ? "" : "none"; $("mapTag").className = "tag demo"; $("mapTag").textContent = "demo data";
+  const parts = Object.entries(src).map(([k, s]) => {
+    const label = { pve: "Proxmox", probes: "Health checks", discovery: "Discovery" }[k];
+    return `${label}: ${s.mode}${s.ok === false ? ` <span class="err">— ${esc(s.error)}</span>` : s.updated ? ` · ${ago(s.updated, S.now)}` : ""}`;
+  });
+  $("footer").innerHTML = parts.map((p) => `<span>${p}</span>`).join("");
+}
+
+function render() {
+  if (!S) return;
+  try { updateMap(); } catch (e) { console.error(e); }
+  for (const f of [renderHost, renderServices, renderBackups, renderEvents, renderChrome]) {
+    try { f(); } catch (e) { console.error(f.name, e); }
+  }
+  if (selected != null) renderDrawer();
+}
+
+/* ---------- live connection ---------- */
+function setLive(on, text) { $("live").classList.toggle("on", on); $("live").lastElementChild.textContent = text; }
+function connect() {
+  const es = new EventSource("/api/stream");
+  es.onmessage = (m) => { S = JSON.parse(m.data); lastMsg = Date.now(); setLive(true, "live"); render(); };
+  es.onerror = () => setLive(false, "reconnecting");
+}
+setInterval(() => {
+  $("clock").textContent = new Date().toLocaleTimeString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  if (lastMsg && Date.now() - lastMsg > 30000) setLive(false, "stale");
+}, 1000);
+fetch("/api/state").then((r) => r.json()).then((s) => { if (!S) { S = s; render(); } }).catch(() => {});
+connect();
+</script>
+</body>
+</html>

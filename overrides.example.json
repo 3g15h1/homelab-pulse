@@ -1,0 +1,13 @@
+{
+  "internet": {"host": "1.1.1.1", "port": 443},
+  "router": {"name": "Router"},
+  "scan": {"ports_add": [8384], "ports_remove": [21]},
+  "guests": {
+    "103": {"role": "Home Assistant", "icon": "home", "ip": "192.168.1.13"}
+  },
+  "checks": [
+    {"id": "public-cert", "name": "Public HTTPS", "kind": "tls", "host": "192.168.1.11", "port": 443,
+     "sni": "home.example.org", "target": 101}
+  ],
+  "hide_checks": ["101:22"]
+}
