@@ -9,6 +9,9 @@ User=pulse
 Group=pulse
 WorkingDirectory=/opt/homelab-pulse
 EnvironmentFile=-/etc/homelab-pulse/env
+# history, alert state and settings live in /var/lib/homelab-pulse/pulse.db
+StateDirectory=homelab-pulse
+StateDirectoryMode=0750
 ExecStart=/usr/bin/python3 /opt/homelab-pulse/pulse/server.py
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE

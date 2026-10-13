@@ -62,6 +62,25 @@
   .muted { color: var(--dim); }
   .faint { color: var(--faint); }
 
+  /* attention strip */
+  .attn { display: none; flex-direction: column; gap: 2px; border: 1px solid var(--line2); background: var(--card);
+          border-radius: 12px; padding: 8px 14px; margin-bottom: 14px; font-size: 13px; }
+  .attn.show { display: flex; }
+  .attn button { all: unset; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+  .attn button:hover span { text-decoration: underline; text-decoration-color: var(--faint); }
+  .attn i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .attn .critical i { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-t); }
+  .attn .warning i { background: var(--warn); }
+  .attn .muted-item { opacity: .5; }
+  .attn small { color: var(--faint); margin-left: auto; white-space: nowrap; }
+  .gear { color: var(--dim); text-decoration: none; font-size: 16px; line-height: 1; padding: 2px 4px; border-radius: 6px; }
+  .gear:hover { color: var(--text); background: var(--card2); }
+  .ranges { display: flex; gap: 4px; margin: 12px 0 2px; }
+  .ranges button { all: unset; cursor: pointer; font-size: 11.5px; padding: 3px 9px; border-radius: 999px; color: var(--dim);
+                   border: 1px solid var(--line); }
+  .ranges button.on { color: var(--text); border-color: var(--line2); background: var(--card2); }
+  .up7 { color: var(--faint); }
+
   /* map */
   .mapcard { position: relative; padding: 0; overflow: hidden; }
   .mapcard h2 { position: absolute; left: 16px; top: 14px; z-index: 2; }
@@ -175,10 +194,12 @@
     <div class="hdr-right">
       <span class="num" id="clock"></span>
       <span class="live" id="live"><i></i><span>connecting</span></span>
+      <a class="gear" href="/settings" title="Alerts &amp; settings" aria-label="Alerts and settings">⚙</a>
     </div>
   </header>
 
   <div class="banner" id="banner"><i></i><span id="bannerText"></span></div>
+  <div class="attn" id="attention" aria-live="polite"></div>
 
   <div class="grid">
     <section class="card mapcard">
@@ -263,6 +284,8 @@ let selected = null;           // selected node key
 let lastMsg = 0;
 let mapKey = "";               // node set + orientation; rebuild the SVG when it changes
 let geom = { W: 1000, H: 620, nodes: {}, links: [] };
+let range = "live";            // drawer history range: live (in memory) or an RRD range from Proxmox
+let U = {};                    // uptime per check id, from /api/uptime
 
 /* ---------- map layout ---------- */
 // Keys: "internet", "router", "node:<name>" for Proxmox nodes, the VMID (number) for guests.
@@ -508,13 +531,17 @@ async function renderDrawer() {
   const n = isNode ? S.nodes.find((x) => nodeKey(x.name) === key) : null;
   const g = isNode ? null : S.guests.find((x) => String(x.vmid) === String(key));
   let hist = null;
-  try { const r = await fetch(`/api/history/${encodeURIComponent(isNode ? (n?.name ?? "") : key)}`); if (r.ok) hist = await r.json(); }
+  const hkey = encodeURIComponent(isNode ? (n?.name ?? "") : key);
+  try { const r = await fetch(range === "live" ? `/api/history/${hkey}` : `/api/rrd/${hkey}?range=${range}`); if (r.ok) hist = await r.json(); }
   catch { /* keep going without sparklines */ }
   if (key !== selected) return;
   if (isNode ? !n : !g) { body.innerHTML = '<span class="muted">Gone.</span>'; return; }
   const bk = g && S.backups?.guests.find((b) => b.vmid === g.vmid);
   const last = (a) => (a && a.length ? a[a.length - 1] : 0);
   const span = hist && hist.t.length > 1 ? Math.round((hist.t[hist.t.length - 1] - hist.t[0]) / 60) : 0;
+  const spanTxt = range === "live" ? `last ${span} min` : { day: "last day", week: "last week", month: "last month", year: "last year" }[range];
+  const ranges = `<div class="ranges" role="group" aria-label="History range">${["live", "day", "week", "month", "year"].map((r) =>
+    `<button data-range="${r}" class="${r === range ? "on" : ""}">${r[0].toUpperCase() + r.slice(1)}</button>`).join("")}</div>`;
   const kv = isNode ? [
     ["Status", n.online ? "online" : "offline"], ["Address", esc(n.ip || "—")],
     ["CPU", `${pct(n.cpu)} of ${n.cpus} threads`], ["Memory", `${fmtBytes(n.mem)} / ${fmtBytes(n.maxmem)}`],
@@ -532,10 +559,34 @@ async function renderDrawer() {
   body.innerHTML = `<h3>${esc(isNode ? n.name : g.name)} <span class="faint" style="font-weight:450;font-size:13px">${isNode ? "" : "#" + g.vmid}</span></h3>
     <div class="muted">${isNode ? esc(n.model) : esc(g.role)}</div>
     <dl class="kv num">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
-    ${hist ? `<div class="spark-block"><div class="lbl"><span>CPU · last ${span} min</span><span class="num">${pct(last(hist.cpu))}</span></div>${sparkSvg(hist.cpu, { max: 1, id: "dc" })}</div>
+    ${ranges}
+    ${hist ? `<div class="spark-block"><div class="lbl"><span>CPU · ${spanTxt}</span><span class="num">${pct(last(hist.cpu))}</span></div>${sparkSvg(hist.cpu, { max: 1, id: "dc" })}</div>
     <div class="spark-block"><div class="lbl"><span>Network in</span><span class="num">${fmtRate(last(hist.net_in))}</span></div>${sparkSvg(hist.net_in, { id: "dn" })}</div>
     <div class="spark-block"><div class="lbl"><span>Network out</span><span class="num">${fmtRate(last(hist.net_out))}</span></div>${sparkSvg(hist.net_out, { color: "#ececef", id: "do" })}</div>` : ""}
+    ${!hist && range !== "live" ? '<div class="muted mini" style="margin:10px 0">History unavailable for this range.</div>' : ""}
     ${probesFor(isNode ? n.name : g.vmid).length ? `<div class="sect list">${probeRows(isNode ? n.name : g.vmid)}</div>` : ""}`;
+  body.querySelectorAll(".ranges button").forEach((b) => b.onclick = () => { range = b.dataset.range; renderDrawer(); });
+}
+
+/* ---------- uptime + attention ---------- */
+function upTxt(id) {
+  const u = U[id]; if (!u || u["7d"] == null) return "";
+  const v = u["7d"], t = v >= 99.95 ? "100" : v >= 99 ? v.toFixed(2).replace(/0$/, "") : v.toFixed(1);
+  return `<span class="up7" title="24 h ${u["24h"] ?? "—"} % · 7 d ${u["7d"]} % · 30 d ${u["30d"] ?? "—"} %">${t} % · 7 d</span> · `;
+}
+async function loadUptime() { try { const r = await fetch("/api/uptime"); if (r.ok) { U = await r.json(); if (S) renderServices(); } } catch { /* next time */ } }
+loadUptime(); setInterval(loadUptime, 300000);
+
+function renderAttention() {
+  const a = S.attention || [], box = $("attention");
+  box.classList.toggle("show", a.length > 0);
+  box.innerHTML = a.map((x) => `<button class="${esc(x.severity)}${x.muted ? " muted-item" : ""}" data-target="${esc(x.target ?? "")}">
+    <i></i><span>${x.muted ? "🔕 " : ""}${esc(x.title)}</span>${x.state === "pending" ? "<small>checking…</small>" : ""}</button>`).join("");
+  box.querySelectorAll("button").forEach((b) => b.onclick = () => {
+    const t = b.dataset.target; if (!t) return;
+    const key = /^\d+$/.test(t) ? Number(t) : S.nodes.some((n) => n.name === t) ? nodeKey(t) : null;
+    if (key != null && selected !== key) select(key);
+  });
 }
 
 /* ---------- cards ---------- */
@@ -578,7 +629,7 @@ function renderServices() {
     const bars = h.map((v, i) => v == null ? `<rect x="${i * 2.4}" y="2" width="1.6" height="14" fill="#f87171" opacity=".7"/>`
       : `<rect x="${i * 2.4}" y="${16 - Math.max(1.5, v / m * 14)}" width="1.6" height="${Math.max(1.5, v / m * 14)}" fill="#8b8b94" opacity=".55"/>`).join("");
     return `<div class="item"><span class="s ${stateOf(p)}"></span>
-      <div style="min-width:0">${esc(p.name)}${p.port && p.source !== "builtin" ? ` <span class="faint">:${p.port}</span>` : ""}<div class="d">${esc(p.detail)}${p.up === false && p.since ? " · " + ago(p.since, S.now) : ""}${p.source === "discovered" ? ' · <span class="faint">auto</span>' : ""}</div></div>
+      <div style="min-width:0">${esc(p.name)}${p.port && p.source !== "builtin" ? ` <span class="faint">:${p.port}</span>` : ""}<div class="d">${upTxt(p.id)}${esc(p.detail)}${p.up === false && p.since ? " · " + ago(p.since, S.now) : ""}${p.source === "discovered" ? ' · <span class="faint">auto</span>' : ""}</div></div>
       <div class="lat num"><svg viewBox="0 0 48 16">${bars}</svg><span style="min-width:44px;text-align:right">${p.latency_ms != null && !p.paused ? (p.latency_ms < 10 ? p.latency_ms.toFixed(1) : Math.round(p.latency_ms)) + " ms" : "—"}</span></div></div>`;
   };
   const names = Object.fromEntries(S.guests.map((g) => [g.vmid, g.name]));
@@ -621,7 +672,7 @@ function renderChrome() {
   $("bannerText").innerHTML = demo ? "<b>Demo mode:</b> a simulated two-node cluster (PULSE_PVE=demo). Set PULSE_PVE=live to watch your own lab." : "";
   $("mapTag").style.display = src.pve.mode === "demo" ? "" : "none"; $("mapTag").className = "tag demo"; $("mapTag").textContent = "demo data";
   const parts = Object.entries(src).map(([k, s]) => {
-    const label = { pve: "Proxmox", probes: "Health checks", discovery: "Discovery" }[k];
+    const label = { pve: "Proxmox", probes: "Health checks", discovery: "Discovery", store: "History", alerts: "Alerts" }[k] || k;
     return `${label}: ${s.mode}${s.ok === false ? ` <span class="err">— ${esc(s.error)}</span>` : s.updated ? ` · ${ago(s.updated, S.now)}` : ""}`;
   });
   $("footer").innerHTML = parts.map((p) => `<span>${p}</span>`).join("");
@@ -630,7 +681,7 @@ function renderChrome() {
 function render() {
   if (!S) return;
   try { updateMap(); } catch (e) { console.error(e); }
-  for (const f of [renderHost, renderServices, renderBackups, renderEvents, renderChrome]) {
+  for (const f of [renderAttention, renderHost, renderServices, renderBackups, renderEvents, renderChrome]) {
     try { f(); } catch (e) { console.error(f.name, e); }
   }
   if (selected != null) renderDrawer();

@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO="3g15h1/homelab-pulse"
 REF="main"
-VMID="" STORAGE="" BRIDGE="vmbr0" IP="dhcp" GW="" SRC="" ROTATE=0 DRY=0
+VMID="" STORAGE="" BRIDGE="vmbr0" IP="dhcp" GW="" SRC="" ROTATE=0 DRY=0 SHOW_PW=0
 APP=/opt/homelab-pulse
 ETC=/etc/homelab-pulse
 TAG=homelab-pulse
@@ -28,6 +28,7 @@ Usage: install.sh [options]
   --ref REF         git branch or tag to install (default: main)
   --src DIR         install from a local checkout instead of downloading
   --rotate-token    create a new API token even if the container already has one
+  --show-password   print the existing admin password for the settings page
   --dry-run         print every change instead of making it
   -h, --help        this help
 EOF
@@ -43,6 +44,7 @@ while [ $# -gt 0 ]; do
     --ref) REF=$2; shift 2 ;;
     --src) SRC=$2; shift 2 ;;
     --rotate-token) ROTATE=1; shift ;;
+    --show-password) SHOW_PW=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -161,6 +163,17 @@ if [ "$HAVE_TOKEN" = 0 ] || [ "$ROTATE" = 1 ]; then
 fi
 run pct push "$VMID" /etc/pve/pve-root-ca.pem "$ETC/pve-ca.pem" --perms 644
 
+# Admin password for the settings page: made once, kept on upgrades, printed only when new.
+ADMIN_PW="" NEW_PW=0
+if [ "$UPGRADE" = 1 ] && pct exec "$VMID" -- test -s "$ETC/admin-password"; then
+  if [ "$SHOW_PW" = 1 ]; then ADMIN_PW=$(pct exec "$VMID" -- cat "$ETC/admin-password"); fi
+else
+  ADMIN_PW=$(python3 -c 'import secrets; print(secrets.token_urlsafe(15))')
+  NEW_PW=1
+  (umask 077; printf '%s\n' "$ADMIN_PW" > "$WORK/admin")
+  run pct push "$VMID" "$WORK/admin" "$ETC/admin-password" --perms 640 --group pulse
+fi
+
 # ------------------------------------------------------------------ app
 tar -C "$SRC" -czf "$WORK/app.tgz" pulse README.md LICENSE update.sh
 if [ "$UPGRADE" = 1 ]; then
@@ -169,6 +182,7 @@ fi
 run pct push "$VMID" "$WORK/app.tgz" /tmp/homelab-pulse.tgz
 in_ct "rm -rf $APP.new && mkdir -p $APP.new && tar -xzf /tmp/homelab-pulse.tgz -C $APP.new && rm /tmp/homelab-pulse.tgz && rm -rf $APP && mv $APP.new $APP && chown -R root:root $APP && chmod -R a+rX $APP"
 run pct push "$VMID" "$SRC/homelab-pulse.service" /etc/systemd/system/homelab-pulse.service
+run pct push "$VMID" "$SRC/homelab-pulse-passwd" /usr/local/bin/homelab-pulse-passwd --perms 755
 run pct push "$VMID" "$SRC/overrides.example.json" "$ETC/overrides.example.json" --perms 644
 
 if [ "$UPGRADE" = 0 ] || ! pct exec "$VMID" -- test -s "$ETC/env"; then
@@ -181,7 +195,10 @@ fi
 
 in_ct "systemctl daemon-reload && systemctl enable -q homelab-pulse && systemctl restart homelab-pulse"
 
-if [ "$DRY" = 1 ]; then say "Dry run: nothing was changed."; exit 0; fi
+if [ "$DRY" = 1 ]; then
+  if [ "$SHOW_PW" = 1 ] && [ "$NEW_PW" = 0 ] && [ -n "$ADMIN_PW" ]; then say "Admin password: $ADMIN_PW"; fi
+  say "Dry run: nothing was changed."; exit 0
+fi
 
 # ------------------------------------------------------------------ verify + report
 PORT=$(pct exec "$VMID" -- sh -c ". $ETC/env; echo \${PULSE_PORT:-80}")
@@ -200,6 +217,10 @@ cat <<EOF
   It discovers your nodes, guests and their services by itself (first full scan within a minute).
   Fine-tune with Proxmox tags on a guest:  pulse-ignore  pulse-noscan  pulse-role-<text>  pulse-icon-<name>
   or with $ETC/overrides.json (example next to it).
+
+  Alerts & settings:  $URL/settings
+$(if [ -n "$ADMIN_PW" ]; then printf '  Admin password:     %s%s' "$ADMIN_PW" "$([ "$NEW_PW" = 1 ] && echo '   (new; keep it somewhere safe)')";
+  else printf '  Admin password:     unchanged (show it with --show-password; reset with homelab-pulse-passwd)'; fi)
 
   Upgrade:    run this installer again
   Uninstall:  bash uninstall.sh   (from the repo; or: pct destroy $VMID && pveum user token remove $PVE_USER $TOKEN_ID)

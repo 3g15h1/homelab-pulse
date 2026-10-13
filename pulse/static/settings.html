@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pulse · alerts &amp; settings</title>
+<meta name="theme-color" content="#09090b">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #09090b; --card: #131316; --card2: #18181c; --line: rgba(255,255,255,.06); --line2: rgba(255,255,255,.1);
+    --text: #ececef; --dim: #8b8b94; --faint: #55555d; --accent: #a5b4fc;
+    --ok: #86efac; --warn: #fcd34d; --bad: #f87171; --bad-t: rgba(248,113,113,.13); --r: 18px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 18px 20px 60px; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+  header a { color: var(--dim); text-decoration: none; }
+  header a:hover { color: var(--text); }
+  h1 { font-size: 17px; font-weight: 650; margin: 0; }
+  .right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--dim); margin: 0 0 12px; }
+  .card h3 { font-size: 13.5px; font-weight: 600; margin: 14px 0 8px; }
+  .card h3:first-of-type { margin-top: 0; }
+  .muted { color: var(--dim); } .faint { color: var(--faint); } .small { font-size: 12.5px; }
+  label { display: block; margin: 8px 0; }
+  label > span { display: block; color: var(--dim); font-size: 12.5px; margin-bottom: 4px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+  .row > label { flex: 1 1 160px; }
+  input[type=text], input[type=password], input[type=number], input[type=time], input[type=url], select, textarea {
+    width: 100%; background: var(--card2); color: var(--text); border: 1px solid var(--line2); border-radius: 10px;
+    padding: 8px 10px; font: inherit; }
+  textarea { min-height: 64px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid rgba(165,180,252,.5); outline-offset: 0; }
+  input.bad { border-color: var(--bad); }
+  .check { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .check input { width: 16px; height: 16px; accent-color: #a5b4fc; }
+  .check label { margin: 0; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; padding: 8px 14px; border: 1px solid var(--line2);
+           background: var(--card2); color: var(--text); }
+  button:hover { border-color: rgba(165,180,252,.5); }
+  button.primary { background: #a5b4fc; color: #0b0b10; border-color: transparent; font-weight: 600; }
+  button.link { background: none; border: 0; color: var(--dim); padding: 4px 6px; }
+  button.link:hover { color: var(--text); }
+  .msg { font-size: 12.5px; margin-left: 8px; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+  .list .it { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .list .it:first-child { border-top: 0; }
+  .list .it > span:first-of-type { flex: 1; min-width: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+  .dot.critical { background: var(--bad); } .dot.warning { background: var(--warn); } .dot.ok { background: var(--ok); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 18px; }
+  .rule { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .rule:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+  .demo { border: 1px solid rgba(252,211,77,.25); color: var(--warn); border-radius: 10px; padding: 8px 12px; margin-bottom: 14px; font-size: 13px; }
+  .sticky { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); padding: 18px 0 6px; display: flex; align-items: center; }
+  code { font-size: 12px; color: var(--text); }
+  #login { max-width: 380px; margin: 60px auto; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a href="/">← Pulse</a>
+    <h1>Alerts &amp; settings</h1>
+    <div class="right"><button class="link" id="signout" hidden>Sign out</button></div>
+  </header>
+  <div class="demo" id="demoNote" hidden>Demo mode: the admin password is <b>demo</b>, and nothing is stored.</div>
+
+  <section class="card" id="login" hidden>
+    <h2>Sign in</h2>
+    <p class="muted small" id="loginHelp">Viewing the dashboard is open to everyone; changing settings needs the admin password.
+      The installer printed it; you can set a new one in the Pulse container with <code>homelab-pulse-passwd</code>.</p>
+    <form id="loginForm">
+      <label><span>Admin password</span><input type="password" id="pw" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">Sign in</button><span class="msg" id="loginMsg"></span>
+    </form>
+  </section>
+
+  <main id="app" hidden>
+    <section class="card">
+      <h2>Needs attention now</h2>
+      <div class="list" id="attention"><span class="muted">Nothing. Everything looks fine.</span></div>
+    </section>
+
+    <section class="card">
+      <h2>Where alerts go</h2>
+      <h3>Webhook</h3>
+      <p class="muted small">Pulse POSTs JSON (<code>title, message, severity, state, items, url</code>) to this address.
+        A Home Assistant <i>webhook</i> automation can turn it into a phone notification.</p>
+      <div class="check"><input type="checkbox" id="wh_enabled"><label for="wh_enabled">Send alerts to the webhook</label></div>
+      <label><span>URL</span><input type="url" id="wh_url" placeholder="http://homeassistant.local:8123/api/webhook/pulse-alerts"></label>
+      <label><span>Extra headers, one per line (<code>Name: value</code>), e.g. Authorization</span>
+        <textarea id="wh_headers" spellcheck="false"></textarea></label>
+      <div class="check"><input type="checkbox" id="wh_insecure"><label for="wh_insecure">Accept a self-signed certificate</label></div>
+      <button data-test="webhook">Save &amp; send test</button><span class="msg" id="msg_webhook"></span>
+
+      <h3 style="margin-top:22px">ntfy</h3>
+      <p class="muted small">Push to an <a href="https://ntfy.sh" style="color:var(--accent)">ntfy</a> topic; the ntfy app shows it on your phone.</p>
+      <div class="check"><input type="checkbox" id="nt_enabled"><label for="nt_enabled">Send alerts to ntfy</label></div>
+      <div class="row">
+        <label><span>Server</span><input type="url" id="nt_server" placeholder="https://ntfy.sh"></label>
+        <label><span>Topic</span><input type="text" id="nt_topic" placeholder="my-lab-alerts-8f3k" maxlength="64"></label>
+      </div>
+      <label><span>Access token (optional)</span><input type="password" id="nt_token" autocomplete="off" placeholder="tk_…"></label>
+      <div class="check"><input type="checkbox" id="nt_insecure"><label for="nt_insecure">Accept a self-signed certificate</label></div>
+      <button data-test="ntfy">Save &amp; send test</button><span class="msg" id="msg_ntfy"></span>
+    </section>
+
+    <section class="card">
+      <h2>When to alert</h2>
+      <div class="grid2" id="kinds"></div>
+      <div class="row" style="margin-top:8px">
+        <label><span>A service must be down for (minutes)</span><input type="number" id="down_after" min="0" max="1440"></label>
+        <label><span>Group alerts arriving within (seconds)</span><input type="number" id="group_window" min="0" max="3600"></label>
+        <label><span>Remind while still broken every (hours, 0 = never)</span><input type="number" id="repeat_h" min="0" max="168"></label>
+      </div>
+      <div class="check"><input type="checkbox" id="send_recovery"><label for="send_recovery">Send a message when a problem is fixed</label></div>
+      <h3>Quiet hours</h3>
+      <div class="check"><input type="checkbox" id="q_enabled"><label for="q_enabled">Hold non-urgent alerts and send one summary afterwards</label></div>
+      <div class="row">
+        <label><span>From</span><input type="time" id="q_start"></label>
+        <label><span>Until</span><input type="time" id="q_end"></label>
+      </div>
+      <div class="check"><input type="checkbox" id="q_crit"><label for="q_crit">Hold critical alerts too</label></div>
+    </section>
+
+    <section class="card">
+      <h2>Early warnings</h2>
+      <div id="warnings"></div>
+    </section>
+
+    <section class="card">
+      <h2>Muted</h2>
+      <div class="list" id="mutes"></div>
+      <div class="row" style="margin-top:10px">
+        <label><span>Mute</span><select id="m_target"></select></label>
+        <label><span>For</span><select id="m_for">
+          <option value="60">1 hour</option><option value="480">8 hours</option><option value="1440">1 day</option>
+          <option value="10080">1 week</option><option value="rec">until it recovers</option><option value="ever">until I unmute</option></select></label>
+        <button id="m_add" type="button" style="flex:0 0 auto">Mute</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Recent deliveries</h2>
+      <div class="list" id="deliveries"><span class="muted">None yet.</span></div>
+    </section>
+
+    <section class="card">
+      <h2>Admin password</h2>
+      <form id="pwForm" class="row">
+        <label><span>Current</span><input type="password" id="pw_cur" autocomplete="current-password" required></label>
+        <label><span>New (10+ characters)</span><input type="password" id="pw_new" autocomplete="new-password" minlength="10" required></label>
+        <button type="submit" style="flex:0 0 auto">Change</button>
+      </form>
+      <span class="msg" id="pwMsg"></span>
+    </section>
+
+    <div class="sticky"><button class="primary" id="save">Save settings</button><span class="msg" id="saveMsg"></span></div>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); if (s < 60) return "just now"; if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`; return `${Math.round(s / 86400)} d ago`; };
+let CFG = null, STATE = null;
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: { "X-Pulse-Request": "1", "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin" });
+  let data = null; try { data = await r.json(); } catch { /* empty body */ }
+  if (r.status === 401 && path !== "/api/login") showLogin();
+  return { ok: r.ok, status: r.status, data: data || {} };
+}
+function msg(id, text, ok) { const m = $(id); m.textContent = text; m.className = "msg " + (ok ? "ok" : "bad"); }
+
+/* ---------- sign in ---------- */
+function showLogin() { $("login").hidden = false; $("app").hidden = true; $("signout").hidden = true; $("pw").focus(); }
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await api("POST", "/api/login", { password: $("pw").value });
+  if (r.ok) { $("pw").value = ""; msg("loginMsg", "", true); start(); }
+  else msg("loginMsg", r.data.error || "Sign-in failed", false);
+};
+$("signout").onclick = async () => { await api("POST", "/api/logout"); showLogin(); };
+
+/* ---------- form <-> settings ---------- */
+const KINDS = { service_down: "A service stops answering", node_offline: "A Proxmox node goes offline",
+  api_down: "Pulse can't reach Proxmox", guest_stopped: "A guest stops unexpectedly", backup_failed: "A backup job fails",
+  warning: "Early warnings (below)" };
+const WARN = {
+  storage_full: ["Storage filling up", { warn_days: "warn when full in (days)", crit_days: "critical when full in (days)", warn_pct: "or above (%)", crit_pct: "critical above (%)" }],
+  cert_expiry: ["Certificates expiring", { warn_days: "warn within (days)", crit_days: "critical within (days)" }],
+  ssd_wear: ["SSD wear", { warn_pct: "warn at (% used)", crit_pct: "critical at (% used)" }],
+  smart: ["SMART health not passing", {}],
+  backup_stale: ["Guest without a recent backup", { hours: "after (hours)" }],
+  node_memory: ["Node memory high", { pct: "above (%)", minutes: "for (minutes)" }],
+  ct_disk: ["Container disk filling up", { warn_pct: "warn above (%)", crit_pct: "critical above (%)" }],
+};
+
+function fill(c) {
+  CFG = c;
+  const w = c.notify.webhook, n = c.notify.ntfy, a = c.alerts;
+  $("wh_enabled").checked = w.enabled; $("wh_url").value = w.url; $("wh_insecure").checked = w.insecure;
+  $("wh_headers").value = Object.entries(w.headers).map(([k, v]) => `${k}: ${v}`).join("\n");
+  $("nt_enabled").checked = n.enabled; $("nt_server").value = n.server; $("nt_topic").value = n.topic;
+  $("nt_token").value = n.token; $("nt_insecure").checked = n.insecure;
+  $("kinds").innerHTML = Object.entries(KINDS).map(([k, label]) =>
+    `<div class="check"><input type="checkbox" id="k_${k}" ${a.kinds[k] ? "checked" : ""}><label for="k_${k}">${label}</label></div>`).join("");
+  $("down_after").value = Math.round(a.down_after_s / 60); $("group_window").value = a.group_window_s;
+  $("repeat_h").value = Math.round(a.repeat_every_s / 3600); $("send_recovery").checked = a.send_recovery;
+  $("q_enabled").checked = a.quiet.enabled; $("q_start").value = a.quiet.start; $("q_end").value = a.quiet.end;
+  $("q_crit").checked = a.quiet.critical_too;
+  $("warnings").innerHTML = Object.entries(WARN).map(([rule, [label, fields]]) => `<div class="rule">
+    <div class="check"><input type="checkbox" id="w_${rule}" ${c.warnings[rule].enabled ? "checked" : ""}><label for="w_${rule}"><b>${label}</b></label></div>
+    ${Object.keys(fields).length ? `<div class="row">${Object.entries(fields).map(([f, l]) =>
+      `<label><span>${l}</span><input type="number" id="w_${rule}_${f}" value="${c.warnings[rule][f]}"></label>`).join("")}</div>` : ""}</div>`).join("");
+}
+
+function collect() {
+  const c = structuredClone(CFG), w = c.notify.webhook, n = c.notify.ntfy, a = c.alerts;
+  const num = (id) => Number($(id).value);
+  w.enabled = $("wh_enabled").checked; w.url = $("wh_url").value.trim(); w.insecure = $("wh_insecure").checked;
+  w.headers = {};
+  for (const line of $("wh_headers").value.split("\n")) {
+    const i = line.indexOf(":"); if (i > 0) w.headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  n.enabled = $("nt_enabled").checked; n.server = $("nt_server").value.trim() || "https://ntfy.sh";
+  n.topic = $("nt_topic").value.trim(); n.token = $("nt_token").value.trim(); n.insecure = $("nt_insecure").checked;
+  for (const k of Object.keys(KINDS)) a.kinds[k] = $(`k_${k}`).checked;
+  a.down_after_s = num("down_after") * 60; a.group_window_s = num("group_window"); a.repeat_every_s = num("repeat_h") * 3600;
+  a.send_recovery = $("send_recovery").checked;
+  a.quiet = { enabled: $("q_enabled").checked, start: $("q_start").value || "23:00", end: $("q_end").value || "07:00",
+              critical_too: $("q_crit").checked };
+  for (const [rule, [, fields]] of Object.entries(WARN)) {
+    c.warnings[rule].enabled = $(`w_${rule}`).checked;
+    for (const f of Object.keys(fields)) c.warnings[rule][f] = num(`w_${rule}_${f}`);
+  }
+  return c;
+}
+
+const FIELD = { "notify.webhook.url": "wh_url", "notify.ntfy.topic": "nt_topic", "notify.ntfy.server": "nt_server",
+  "notify.ntfy.token": "nt_token", "alerts.quiet.start": "q_start", "alerts.quiet.end": "q_end",
+  "alerts.down_after_s": "down_after", "alerts.group_window_s": "group_window", "alerts.repeat_every_s": "repeat_h" };
+async function save() {
+  document.querySelectorAll("input.bad").forEach((i) => i.classList.remove("bad"));
+  const r = await api("PUT", "/api/settings", collect());
+  if (r.ok) { fill(r.data.settings); msg("saveMsg", "Saved.", true); return true; }
+  const p = r.data.path || "", el = FIELD[p] || (p.startsWith("warnings.") ? `w_${p.split(".")[1]}_${p.split(".")[2]}` : null);
+  if (el && $(el)) { $(el).classList.add("bad"); $(el).focus(); }
+  msg("saveMsg", `Not saved: ${p ? p + " " : ""}${r.data.error || r.status}`, false);
+  return false;
+}
+$("save").onclick = save;
+document.querySelectorAll("[data-test]").forEach((b) => b.onclick = async () => {
+  const ch = b.dataset.test; msg(`msg_${ch}`, "Sending…", true);
+  if (!(await save())) { msg(`msg_${ch}`, "Fix the settings first.", false); return; }
+  const r = await api("POST", "/api/test-notify", { channel: ch });
+  const res = (r.data.results || [])[0];
+  msg(`msg_${ch}`, res ? (res.ok ? "Delivered ✓" : `Failed: ${res.error || res.status}`) : (r.data.error || "Failed"), Boolean(res && res.ok));
+  loadDeliveries();
+});
+
+/* ---------- attention, mutes, deliveries ---------- */
+async function loadState() {
+  try { STATE = await (await fetch("/api/state")).json(); } catch { return; }
+  const a = STATE.attention || [];
+  $("attention").innerHTML = a.length ? a.map((x) => `<div class="it"><i class="dot ${esc(x.severity)}"></i><span>${x.muted ? "🔕 " : ""}${esc(x.title)}</span>
+    ${x.kind === "guest_stopped" ? `<button class="link" data-clear="${esc(x.key)}">Clear</button>` : ""}
+    <button class="link" data-mute="${esc(x.key)}">Mute 8 h</button></div>`).join("")
+    : '<span class="muted">Nothing. Everything looks fine.</span>';
+  $("attention").querySelectorAll("[data-clear]").forEach((b) => b.onclick = async () => { await api("POST", `/api/alerts/${encodeURIComponent(b.dataset.clear)}/clear`); loadState(); });
+  $("attention").querySelectorAll("[data-mute]").forEach((b) => b.onclick = async () => { await api("POST", "/api/mutes", { target: b.dataset.mute, minutes: 480 }); loadMutes(); loadState(); });
+  const opts = [["", "Choose…"], ...STATE.nodes.map((n) => [`node:${n.name}`, `Node ${n.name} (everything on it)`]),
+    ...STATE.guests.map((g) => [`guest:${g.vmid}`, `Guest ${g.name} (#${g.vmid})`]),
+    ...STATE.probes.map((p) => [`check:${p.id}`, `Check ${p.name}${p.guest ? " on " + p.guest : ""}`])];
+  const cur = $("m_target").value;
+  $("m_target").innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+  $("m_target").value = cur;
+}
+async function loadMutes() {
+  const r = await api("GET", "/api/mutes"); if (!r.ok) return;
+  const m = r.data.mutes;
+  $("mutes").innerHTML = m.length ? m.map((x) => `<div class="it"><span>🔕 ${esc(x.target)}</span>
+    <span class="muted small">${x.until_ts ? "until " + new Date(x.until_ts * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) : x.until_recovered ? "until it recovers" : "until unmuted"}</span>
+    <button class="link" data-unmute="${esc(x.target)}">Unmute</button></div>`).join("") : '<span class="muted">Nothing is muted.</span>';
+  $("mutes").querySelectorAll("[data-unmute]").forEach((b) => b.onclick = async () => { await api("DELETE", `/api/mutes/${encodeURIComponent(b.dataset.unmute)}`); loadMutes(); loadState(); });
+}
+$("m_add").onclick = async () => {
+  const target = $("m_target").value, f = $("m_for").value; if (!target) return;
+  await api("POST", "/api/mutes", { target, minutes: /^\d+$/.test(f) ? Number(f) : null, until_recovered: f === "rec" });
+  loadMutes(); loadState();
+};
+async function loadDeliveries() {
+  const r = await api("GET", "/api/deliveries"); if (!r.ok) return;
+  const d = r.data.deliveries;
+  $("deliveries").innerHTML = d.length ? d.slice(0, 15).map((x) => `<div class="it"><i class="dot ${x.ok ? "ok" : "critical"}"></i>
+    <span>${esc(x.title)}<div class="muted small">${esc(x.channel)} · ${x.ok ? "delivered" : esc(x.error || x.status)}</div></span>
+    <span class="faint small">${ago(x.ts)}</span></div>`).join("") : '<span class="muted">None yet.</span>';
+}
+
+$("pwForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await api("POST", "/api/password", { current: $("pw_cur").value, new: $("pw_new").value });
+  if (r.ok) { msg("pwMsg", "Changed. Sign in with the new password.", true); setTimeout(showLogin, 1200); }
+  else msg("pwMsg", r.data.error || "Not changed", false);
+};
+
+/* ---------- start ---------- */
+async function start() {
+  const s = await (await fetch("/api/session")).json();
+  $("demoNote").hidden = !s.demo;
+  if (!s.admin_set) $("loginHelp").textContent = "No admin password is set yet. In the Pulse container run: homelab-pulse-passwd";
+  if (!s.signed_in) { showLogin(); return; }
+  const r = await api("GET", "/api/settings"); if (!r.ok) return;
+  $("login").hidden = true; $("app").hidden = false; $("signout").hidden = false;
+  fill(r.data.settings); loadState(); loadMutes(); loadDeliveries();
+}
+start();
+setInterval(() => { if (!$("app").hidden) { loadState(); loadDeliveries(); } }, 30000);
+</script>
+</body>
+</html>

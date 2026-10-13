@@ -22,6 +22,7 @@ cp -a "$SRC/pulse" "$SRC/README.md" "$SRC/LICENSE" "$SRC/update.sh" "$APP.new/"
 mv "$APP.new" "$APP"
 chown -R root:root "$APP" && chmod -R a+rX "$APP"
 install -m 644 "$SRC/homelab-pulse.service" /etc/systemd/system/homelab-pulse.service
+install -m 755 "$SRC/homelab-pulse-passwd" /usr/local/bin/homelab-pulse-passwd
 systemctl daemon-reload
 systemctl restart homelab-pulse
 sleep 2

@@ -1,6 +1,7 @@
 # Homelab Pulse
 
-A live, animated map of your Proxmox homelab on one page, and it **figures out the lab by itself**.
+A live, animated map of your Proxmox homelab on one page, and it **figures out the lab by itself**. It
+also **watches the lab for you**: it sends a push notification when something breaks or is about to.
 Install it and it finds every node, VM and container, their IP addresses, and the services they run
 (web apps, DNS, MQTT, databases…), then keeps checking that those services answer. Guests you create
 later show up within a minute. You don't edit a config file.
@@ -29,7 +30,7 @@ The installer:
 1. creates an unprivileged Debian 13 container (1 core, 512 MB, 4 GB, next free ID, DHCP, tagged `homelab-pulse`),
 2. creates a Proxmox user `pulse@pve` with the built-in read-only role **PVEAuditor** and an API token
    `pulse@pve!ct<vmid>` for this container,
-3. installs Pulse as a systemd service and prints its address.
+3. installs Pulse as a systemd service and prints its address and the **admin password** for the settings page.
 
 Options: `--vmid`, `--storage`, `--bridge`, `--ip 192.168.1.60/24 --gw 192.168.1.1`, `--ref <tag>`,
 `--dry-run` (prints every change and makes none). `install.sh --help` lists them all.
@@ -71,6 +72,70 @@ every 15 s   run the health checks, 8 at a time; a check turns red after 2 failu
   during a scan doesn't lose its checks. Checks for a stopped guest are paused (grey), not red.
 - **Clusters:** every node gets its own hub on the map and its own panel. Guests move with migrations.
 
+## Alerts
+
+Open **⚙ → Alerts & settings** (`/settings`) and sign in with the admin password the installer printed.
+Pick where alerts go, press **Save & send test**, and you're done.
+
+- **Webhook:** Pulse POSTs JSON `{title, message, severity, state, items, url, ts}` to any URL, with optional
+  extra headers. In Home Assistant, a *Webhook* trigger plus a `notify.mobile_app_…` action puts it on your
+  phone through the companion app.
+- **ntfy:** push to an [ntfy](https://ntfy.sh) topic (ntfy.sh or your own server, optional access token).
+  Critical alerts arrive with high priority, and tapping one opens the dashboard.
+
+What raises an alert (each can be switched off):
+
+| Alert | When |
+|---|---|
+| Service down | a health check has failed for 3 minutes (adjustable) |
+| Node offline | a Proxmox node drops out |
+| Pulse can't reach Proxmox | the API has failed for 2 minutes |
+| Guest stopped unexpectedly | a VM/container stopped and no stop/shutdown task explains it |
+| Backup failed | the latest vzdump job on a node didn't finish OK |
+| Early warning | see below |
+
+How it behaves:
+- **Recovery:** you get a "back after 12 min" message when a problem clears.
+- **Grouping:** anything within 60 s becomes one message, so a host reboot is "12 services down on pve1", not 12 pings.
+- **Quiet hours:** non-critical alerts are held and sent as one summary in the morning.
+- **Mutes:** silence a check, a guest or a whole node for maintenance, for a while or until it recovers.
+- **Reminders:** optional, while something stays broken.
+- **Restarts:** alert state survives restarts and upgrades, so nothing is sent twice.
+
+## Early warnings
+
+Problems that aren't outages yet. They show in an **Attention** strip on the dashboard and can alert too:
+
+| Warning | Default |
+|---|---|
+| Storage filling up | full within 30 days at the current rate (critical: 7), or above 85 % (critical: 95 %) |
+| Certificate expiring | any TLS check within 21 days (critical: 7) |
+| SSD wear / SMART | 80 % worn (critical: 90 %); SMART not passing |
+| Guest without a recent backup | no successful backup in 48 h (guests in a backup job) |
+| Node memory high | above 90 % for 15 minutes |
+| Container disk filling up | above 90 % (critical: 97 %) |
+
+The storage forecast uses **Proxmox's own history** (its RRD database), so it works from the first minute.
+It only warns about a steady trend, not a one-off copy.
+
+## History
+
+- **Graphs:** each guest's and node's drawer has **Live · Day · Week · Month · Year**. Live is the last
+  30 minutes; the longer ranges come straight from Proxmox, which keeps a year of data.
+- **Uptime:** every health check shows uptime for 24 h, 7 d and 30 d.
+- **Survives restarts:** check results (90 days), the activity feed (30 days), alert state and settings are
+  kept in a small SQLite file, `/var/lib/homelab-pulse/pulse.db`.
+
+## Settings page and admin password
+
+Viewing the dashboard stays open as before. Changing anything on `/settings` needs the admin password.
+- **Storage:** the password is stored hashed (PBKDF2), and a sign-in lasts 30 days.
+- **Secrets:** the ntfy token and webhook headers are never shown back in full.
+- **Attempts:** sign-ins are limited to 5 a minute.
+- **Forgotten password:** in the Pulse container, run `homelab-pulse-passwd` (or `homelab-pulse-passwd --generate`).
+- **Upgrading from 1.0:** the installer creates a password and prints it.
+- **Seeing it again:** `install.sh --show-password`.
+
 ## Fine-tuning
 
 Discovery needs no help, but you can steer it.
@@ -111,17 +176,20 @@ Precedence: guest tags, then `overrides.json`, then discovery, then a guess from
 
 `/etc/homelab-pulse/env` (see `env.example`): `PULSE_PVE` (`live` or `demo`), `PULSE_PVE_HOST`,
 `PULSE_PVE_PORT`, `PULSE_PVE_TOKEN_FILE`, `PULSE_PVE_CA`, `PULSE_PVE_TLS_NAME` (rarely needed),
-`PULSE_OVERRIDES`, `PULSE_PORT`, `PULSE_BIND`, `PULSE_LOG`. Restart after editing:
+`PULSE_OVERRIDES`, `PULSE_DB`, `PULSE_ADMIN_PASSWORD_FILE`, `PULSE_PUBLIC_URL` (the link used in
+notifications), `PULSE_PORT`, `PULSE_BIND`, `PULSE_LOG`. Restart after editing:
 `systemctl restart homelab-pulse`.
 
-Routes: `/` UI, `/api/state` JSON snapshot, `/api/stream` Server-Sent Events, `/api/history/<vmid|node>`,
-`/healthz` (503 when Proxmox, the checks or discovery are failing).
+Routes: `/` UI, `/settings`, `/api/state` JSON snapshot, `/api/stream` Server-Sent Events,
+`/api/history/<vmid|node>`, `/api/rrd/<vmid|node>?range=day|week|month|year`, `/api/uptime`,
+`/healthz` (503 when Proxmox, the checks or discovery are failing). The settings API (`/api/settings`, `/api/mutes`,
+`/api/test-notify`, …) needs a signed-in session and the `X-Pulse-Request: 1` header.
 
 ## Try it without Proxmox
 
 ```bash
 git clone https://github.com/3g15h1/homelab-pulse && cd homelab-pulse
-PULSE_PORT=8765 python3 pulse/server.py     # demo mode: a simulated two-node cluster
+PULSE_PORT=8765 python3 pulse/server.py     # demo mode: a simulated two-node cluster (settings password: demo)
 ```
 
 Python 3.11+ standard library only. There's nothing to `pip install`.
@@ -145,7 +213,8 @@ Python 3.11+ standard library only. There's nothing to `pip install`.
   a guest `pulse-noscan` to opt it out.
 - **No login on the dashboard.** Anyone who can reach it sees guest names, addresses, services and backup
   state. Keep it on your LAN or a VPN such as Tailscale. Don't expose it to the internet.
-- Nothing leaves your network except the Internet check (a TCP connect to 1.1.1.1:443, which you can turn off).
+- Nothing leaves your network except the Internet check (a TCP connect to 1.1.1.1:443, which you can turn off)
+  and the alerts you configure.
 - Text taken from scanned services (page titles, headers) is shortened and always shown escaped.
 
 **Proxmox VE 8:** reading a VM's addresses through the guest agent needs `VM.Monitor`, which the
@@ -166,7 +235,8 @@ unless another Pulse install still uses it.
 python3 -m unittest discover -s tests -t .
 ```
 
-`pulse/discover.py` is the discovery pipeline, `pulse/catalog.py` the list of recognised software and
+`pulse/alerts.py` is the alert state machine, `pulse/early.py` the early warnings, `pulse/notify.py` delivery,
+`pulse/store.py` the SQLite history, `pulse/discover.py` the discovery pipeline, `pulse/catalog.py` the list of recognised software and
 scanned ports, `pulse/collect.py` the polling and the snapshot, `pulse/demo.py` the simulated cluster.
 New software to recognise is usually a single line in `catalog.RULES`.
 

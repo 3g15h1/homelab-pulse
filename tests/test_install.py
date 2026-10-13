@@ -31,7 +31,10 @@ esac''',
       *) echo "Configuration file 'nodes/home/lxc/$2.conf' does not exist" >&2; exit 2 ;;
     esac ;;
   status) echo "status: running" ;;
-  exec) case "$*" in *"test -s"*) exit 0 ;; *"grep -q PULSE_PVE_HOST"*) exit 1 ;; *) exit 0 ;; esac ;;
+  exec) case "$*" in
+      *"admin-password"*"cat"*|*"cat"*"admin-password"*) echo "old-pass-1234" ;;
+      *"test -s"*"admin-password"*) if [ -n "$ADMINPW" ]; then exit 0; else exit 1; fi ;;
+      *"test -s"*) exit 0 ;; *"grep -q PULSE_PVE_HOST"*) exit 1 ;; *) exit 0 ;; esac ;;
   *) echo "UNEXPECTED pct $*" >&2; exit 99 ;;
 esac''',
     "pveum": r'''case "$1 $2" in
@@ -96,6 +99,20 @@ class InstallDryRunTests(unittest.TestCase):
     def test_static_install_token_is_per_container(self):
         r = self.run_install("--vmid", "150", "--ip", "10.0.0.5/24", "--gw", "10.0.0.1")
         self.assertIn("+ pveum user token add pulse@pve ct150 --privsep 0", r.stdout)
+
+    def test_admin_password_generated_when_missing(self):
+        r = self.run_install()
+        self.assertIn("/etc/homelab-pulse/admin-password --perms 640 --group pulse", r.stdout)
+        r = self.run_install(env_extra={"TAGGED": "1"})                  # upgrade from 1.0: none yet
+        self.assertIn("/etc/homelab-pulse/admin-password --perms 640 --group pulse", r.stdout)
+        self.assertIn("/usr/local/bin/homelab-pulse-passwd", r.stdout)
+
+    def test_existing_password_kept_and_not_printed(self):
+        r = self.run_install(env_extra={"TAGGED": "1", "ADMINPW": "1"})
+        self.assertNotIn("admin-password --perms", r.stdout)
+        self.assertNotIn("old-pass-1234", r.stdout)
+        r = self.run_install("--show-password", env_extra={"TAGGED": "1", "ADMINPW": "1"})
+        self.assertIn("old-pass-1234", r.stdout)
 
     def test_help(self):
         r = subprocess.run(["bash", str(ROOT / "install.sh"), "--help"], capture_output=True, text=True)

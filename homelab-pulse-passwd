@@ -1,0 +1,5 @@
+#!/bin/sh
+# Set the Homelab Pulse admin password (settings page). Run as root in the Pulse container.
+#   homelab-pulse-passwd              asks for a new password
+#   homelab-pulse-passwd --generate   makes one up and prints it
+exec /usr/bin/python3 /opt/homelab-pulse/pulse/passwd.py "$@"

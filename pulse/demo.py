@@ -15,6 +15,7 @@ GIB, MIB = 1024 ** 3, 1024 ** 2
 NODES = {"pve1": {"ip": "192.168.1.2", "cpus": 8, "mem": 32, "model": "Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz"},
          "pve2": {"ip": "192.168.1.3", "cpus": 4, "mem": 16, "model": "Intel(R) N100"}}
 ROUTER = "192.168.1.1"
+STORAGE_TREND = {"used_now": 300e9, "per_day": 3e9}     # pve2 local-lvm: 60 GB free, ~20 days left
 
 # vmid: (node, type, name, cores, maxmem MiB, maxdisk GiB, base cpu, mem fraction, ip, running, agent)
 GUESTS = {
@@ -54,10 +55,15 @@ SERVICES = {   # what DemoNet answers on, per IP
 }
 
 
+OUTAGE_CHECK = "202:443"          # the demo nas's web UI drops out for 5 min every 20 min
+OUTAGE_CYCLE, OUTAGE_FROM, OUTAGE_TO = 1200, 100, 400
+
+
 class DemoNet(Net):
-    def __init__(self, seed=3):
+    def __init__(self, seed=3, clock=time.time):
         super().__init__()
         self.rng = random.Random(seed)
+        self.clock = clock
 
     def connect(self, ip, port):
         return any(f.port == port for f in SERVICES.get(ip, ()))
@@ -66,6 +72,8 @@ class DemoNet(Net):
         return next(f for f in SERVICES[ip] if f.port == port)
 
     def probe(self, spec):
+        if spec.get("id") == OUTAGE_CHECK and OUTAGE_FROM <= self.clock() % OUTAGE_CYCLE < OUTAGE_TO:
+            return probes.Result(False, None, "timed out")
         lat = round(self.rng.uniform(0.4, 4.0) if spec.get("target") != "internet" else self.rng.uniform(9, 16), 1)
         detail = {"dns": "blocking ads", "tls": "cert 61 days left", "tcp": f"port {spec.get('port')} open"}
         return probes.Result(True, lat, detail.get(spec["kind"], "HTTP 200"))
@@ -123,7 +131,8 @@ class DemoPve:
                 "tags": "media" if vmid == 104 else "",
             })
         for node in NODES:
-            for sid, total, used, kind in (("local", 100e9, 14e9, "dir"), ("local-lvm", 360e9, 90e9, "lvmthin")):
+            lvm_used = STORAGE_TREND["used_now"] if node == "pve2" else 90e9
+            for sid, total, used, kind in (("local", 100e9, 14e9, "dir"), ("local-lvm", 360e9, lvm_used, "lvmthin")):
                 out.append({"id": f"storage/{node}/{sid}", "type": "storage", "storage": sid, "node": node,
                             "status": "available", "disk": int(used), "maxdisk": int(total), "plugintype": kind,
                             "shared": 0})
@@ -204,6 +213,45 @@ class DemoPve:
                       f"INFO: Finished Backup of VM {vmid} (00:00:{20 + vmid % 30:02d})"]
         lines.append("INFO: Backup job finished successfully")
         return [{"n": i + 1, "t": line} for i, line in enumerate(lines)]
+
+    # -- Proxmox RRD (history) --
+
+    _SPAN = {"hour": 3600, "day": 86400, "week": 7 * 86400, "month": 30 * 86400, "year": 365 * 86400}
+
+    def _times(self, timeframe, n=240):
+        span, now = self._SPAN[timeframe], self.clock()
+        step = span / n
+        return [int(now - span + i * step) for i in range(1, n + 1)]
+
+    def rrd(self, node, kind, vmid, timeframe):
+        g = GUESTS[int(vmid)]
+        out = []
+        for t in self._times(timeframe):
+            wave = 0.5 + 0.5 * math.sin(t / 5400 + int(vmid))
+            out.append({"time": t, "cpu": g[6] * (0.5 + wave) if g[9] else 0, "maxcpu": g[3],
+                        "mem": g[4] * MIB * (g[7] + 0.05 * wave) if g[9] else 0, "maxmem": g[4] * MIB,
+                        "netin": 3e4 * (1 + 3 * wave), "netout": 2e4 * (1 + 2 * wave),
+                        "disk": g[5] * GIB * 0.31, "maxdisk": g[5] * GIB})
+        return out
+
+    def node_rrd(self, node, timeframe):
+        n = NODES[node]
+        return [{"time": t, "cpu": 0.05 + 0.04 * math.sin(t / 7200), "maxcpu": n["cpus"],
+                 "memused": n["mem"] * GIB * (0.4 + 0.03 * math.sin(t / 9000)), "memtotal": n["mem"] * GIB,
+                 "netin": 2e5 * (1.2 + math.sin(t / 3600)), "netout": 1.5e5 * (1.2 + math.sin(t / 4000))}
+                for t in self._times(timeframe)]
+
+    def storage_rrd(self, node, storage, timeframe):
+        trend = node == "pve2" and storage == "local-lvm"
+        out = []
+        for t in self._times(timeframe, n=720):
+            if trend:       # fills ~3 GB a day: full in ~20 days
+                used = STORAGE_TREND["used_now"] - STORAGE_TREND["per_day"] * (self.clock() - t) / 86400
+            else:
+                used = {"local": 14e9, "local-lvm": 90e9, "nas-backup": 820e9}.get(storage, 1e9)
+            out.append({"time": t, "used": used, "total": 3.8e12 if storage == "nas-backup" else
+                        (100e9 if storage == "local" else 360e9)})
+        return out
 
     def tasks(self):
         start = self._last_2am()

@@ -9,10 +9,14 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+import alerts as alerts_mod
 import catalog
 import discover
+import early
 import overrides as overrides_mod
 import probes as probes_mod
+import settings as settings_mod
+import store as store_mod
 
 log = logging.getLogger("pulse")
 
@@ -235,14 +239,68 @@ class ProbeState:
                 "history": list(self.history)}
 
 
+# ---------------------------------------------------------------- alert conditions
+
+STOP_TASKS = {"vzstop", "vzshutdown", "qmstop", "qmshutdown", "vzdestroy", "qmdestroy", "vzmigrate", "qmigrate",
+              "vzsuspend", "qmsuspend", "qmpause"}
+STOP_GRACE_S = 120      # a stop task this close to the stop explains it
+STOP_SETTLE_S = 90      # wait this long so the task list (polled every 60 s) has caught up
+
+
+def build_conditions(snap, stopped, tasks, now):
+    """What is wrong right now, as alert conditions (see alerts.py). `stopped` maps VMIDs that went
+    from running to stopped to when that was seen; `tasks` is Proxmox's recent task list."""
+    out = []
+    guests = {g["vmid"]: g for g in snap.get("guests", [])}
+    nodes = {n["name"] for n in snap.get("nodes", [])}
+    for p in snap.get("probes", []):
+        if p.get("up") is not False or p.get("paused"):
+            continue
+        tgt = p.get("target")
+        g = guests.get(tgt) if isinstance(tgt, int) else None
+        node = g["node"] if g else (tgt if tgt in nodes else None)
+        name = f"{p['name']} on {p['guest'] or g['name']}" if (p.get("guest") or g) else p["name"]
+        out.append({"key": f"check:{p['id']}", "kind": "service_down", "severity": "critical",
+                    "title": f"{name} is down", "target": tgt, "node": node})
+    for n in snap.get("nodes", []):
+        if not n.get("online"):
+            out.append({"key": f"node:{n['name']}", "kind": "node_offline", "severity": "critical",
+                        "title": f"{n['name']} is offline", "target": n["name"], "node": n["name"]})
+    pve = snap.get("sources", {}).get("pve", {})
+    if pve.get("ok") is False:
+        out.append({"key": "source:pve", "kind": "api_down", "severity": "critical",
+                    "title": f"Pulse can't reach Proxmox ({(pve.get('error') or 'no answer')[:80]})",
+                    "target": None, "node": None})
+    for r in (snap.get("backups") or {}).get("runs", []):
+        if not r.get("ok"):
+            out.append({"key": f"backup:{r['node']}", "kind": "backup_failed", "severity": "critical",
+                        "title": f"Backup on {r['node']} failed: {(r.get('status') or '')[:60]}",
+                        "target": r["node"], "node": r["node"]})
+    for vmid, ts in stopped.items():
+        g = guests.get(vmid)
+        if not g or g.get("running") or now - ts < STOP_SETTLE_S:
+            continue
+        explained = any(t.get("type") in STOP_TASKS and str(t.get("id")) == str(vmid)
+                        and (t.get("starttime") or 0) - STOP_GRACE_S <= ts <= (t.get("endtime") or now) + STOP_GRACE_S
+                        for t in tasks)
+        if not explained:
+            out.append({"key": f"guest:{vmid}:stopped", "kind": "guest_stopped", "severity": "warning",
+                        "title": f"{g['name']} stopped unexpectedly", "target": vmid, "node": g.get("node")})
+    return out
+
+
 # ---------------------------------------------------------------- collector
 
 class Collector:
     FAST, SLOW, PROBE = 5, 60, 15
     DISCOVERY_TICK, FULL_DISCOVERY, EARLY_DELAY = 15, 300, 45
 
+    ALERTS = 15
+    RRD_TTL = {"day": 60, "week": 300, "month": 1800, "year": 7200}
+    STORAGE_HIST_EVERY = 1800
+
     def __init__(self, pve, pve_mode, net, probe_fn=probes_mod.run, overrides_path=None, ca_path=None,
-                 clock=time.time):
+                 clock=time.time, store=None, notifier=None, settings_loader=None):
         self.pve, self.clock, self.probe_fn = pve, clock, probe_fn
         self.overrides_path, self.ca_path = overrides_path, ca_path
         self.ports = catalog.SCAN_PORTS
@@ -266,11 +324,27 @@ class Collector:
         self.ov, self.ov_error = {}, None
         self.backups, self.task_ev = None, []
         self.vzdump_logs = {}       # upid -> parsed log (finished logs never change)
-        self.probe_ev, self.disc_ev = deque(maxlen=50), deque(maxlen=50)
         self.history = {}
         self.checks = {}            # id -> ProbeState, in plan order
         self._stop = threading.Event()
         self._probe_wake = threading.Event()   # set when new checks appear, so they're probed at once
+        # 1.1: alerts, lasting history, early warnings
+        self.store = store or store_mod.Store(":memory:", clock=clock)
+        self.notifier = notifier
+        self.settings_loader = settings_loader or (lambda: settings_mod.load(self.store))
+        self.engine = alerts_mod.AlertEngine(self.store.load_alerts(), started=clock())
+        self._alert_lock = threading.Lock()     # engine state is touched by the alert loop and "Clear" requests
+        self.events_log = deque(reversed(self.store.recent_events(50)), maxlen=50)   # oldest first
+        self.stopped = {}           # vmid -> when it was seen going from running to stopped
+        self.tasks_raw = []
+        self.storage_hist, self.storage_hist_at = {}, None
+        self.early_state, self.attention = {}, []
+        self.lab_name = "homelab"
+        self.last_compact = None
+        self.rrd_cache, self.uptime_cache = {}, (None, {})
+        self.sources["store"] = {"mode": "memory" if self.store.path == ":memory:" else "sqlite",
+                                 "ok": self.store.error is None, "error": self.store.error, "updated": None}
+        self.sources["alerts"] = {"mode": "off", "ok": None, "error": None, "updated": None}
 
     # -- polling steps (each callable directly from tests) --
 
@@ -288,6 +362,10 @@ class Collector:
                 for vmid, up in running.items():
                     if up and not self.prev_running.get(vmid):
                         self.pending[vmid] = now + self.EARLY_DELAY
+                    if not up and self.prev_running.get(vmid):
+                        self.stopped[vmid] = now
+            for vmid in [v for v in self.stopped if running.get(v, False) or v not in running]:
+                del self.stopped[vmid]
             self.prev_running = running
             self.resources, self.guests, self.nodes = res, guests, nodes
             self.storage, self.shared_storage = per_node, shared
@@ -323,7 +401,10 @@ class Collector:
         now = self.clock()
         self._load_overrides()
         try:
-            self.node_ips = {e["name"]: e.get("ip") for e in self.pve.cluster_status() if e.get("type") == "node"}
+            status = self.pve.cluster_status()
+            self.node_ips = {e["name"]: e.get("ip") for e in status if e.get("type") == "node"}
+            cluster = next((e.get("name") for e in status if e.get("type") == "cluster"), None)
+            self.lab_name = cluster or (next(iter(self.node_ips)) if len(self.node_ips) == 1 else "homelab")
         except Exception as e:  # noqa: BLE001
             log.warning("cluster status: %s", e)
         online = [n["name"] for n in self.nodes if n["online"]]
@@ -354,6 +435,7 @@ class Collector:
             names = {g["vmid"]: g["name"] for g in self.guests}
             self.backups = backup_summary(runs, per_vm, self.guests, now)
             self.task_ev = task_events(list(tasks.values()), names)
+            self.tasks_raw = list(tasks.values())
             self._replan()
             self._ok("pve", now)
 
@@ -388,7 +470,8 @@ class Collector:
         with self.cond:
             for t in targets:
                 self.pending.pop(t["key"], None)
-            self.disc_ev.extend(events)
+            for ev in events:
+                self._add_event(ev)
             self._apply_meta()
             self._replan()
             self._ok("discovery", now)
@@ -412,8 +495,118 @@ class Collector:
             for st, r in zip(active, results):
                 ev = st.update(r, now)
                 if ev:
-                    self.probe_ev.append(ev)
+                    self._add_event(ev)
             self._ok("probes", now)
+        self.store.record_checks([(st.spec["id"], st.up, st.latency) for st in active], now)
+
+    def poll_alerts(self):
+        """Conditions + early warnings -> alert engine -> notifier. Persists state and events."""
+        now = self.clock()
+        cfg = self.settings_loader()
+        snap = self.snapshot()
+        if self.storage_hist_at is None or now - self.storage_hist_at >= self.STORAGE_HIST_EVERY:
+            self._refresh_storage_history(snap)
+            self.storage_hist_at = now
+        conds = build_conditions(snap, dict(self.stopped), self.tasks_raw, now)
+        conds += early.evaluate(snap, self.storage_hist, cfg["warnings"], self.early_state, now)
+        mutes = self.store.list_mutes(now)
+        with self._alert_lock:
+            notes = self.engine.process(conds, now, cfg["alerts"], mutes, self.lab_name)
+            engine_events = list(self.engine.events)
+            states = {k: dict(v) if isinstance(v, dict) else v for k, v in self.engine.states.items()}
+            self.store.save_alerts(self.engine.states)
+        for m in mutes:                             # "until it recovers" mutes end with their problem
+            if m["until_recovered"] and not any(alerts_mod.AlertEngine._muted(c["key"], c, [m]) for c in conds):
+                self.store.remove_mute(m["target"])
+        if self.notifier:
+            for n in notes:
+                self.notifier.enqueue(n, cfg["notify"])
+        if self.last_compact is None or now - self.last_compact >= 3600:
+            self.store.compact(now)
+            self.last_compact = now
+        channels = [k for k in ("webhook", "ntfy") if cfg["notify"][k]["enabled"]]
+        last = getattr(self.notifier, "last", None)
+        attention = []
+        for c in conds:
+            st = states.get(c["key"], {})
+            attention.append({"key": c["key"], "kind": c["kind"], "title": c["title"], "severity": c["severity"],
+                              "state": st.get("state", "pending"), "target": c.get("target"),
+                              "muted": alerts_mod.AlertEngine._muted(c["key"], c, mutes)})
+        attention.sort(key=lambda a: (-alerts_mod.RANK[a["severity"]], a["muted"], a["title"]))
+        with self.cond:
+            for ev in engine_events:
+                self._add_event(ev)
+            self.attention = attention
+            self.sources["alerts"].update(mode="+".join(channels) or "off", updated=now,
+                                          ok=None if not last else last["ok"],
+                                          error=None if not last or last["ok"] else f"{last['channel']}: {last['error']}")
+            self.sources["store"].update(ok=self.store.error is None, error=self.store.error, updated=now)
+            self.version += 1
+            self.cond.notify_all()
+
+    def clear_alert(self, key):
+        m = re.fullmatch(r"guest:(\d+):stopped", key)
+        if m:
+            self.stopped.pop(int(m.group(1)), None)
+        with self._alert_lock:
+            self.engine.clear(key)
+            self.store.save_alerts(self.engine.states)
+
+    def _refresh_storage_history(self, snap):
+        hist = dict(self.storage_hist)
+        targets = [(n["name"], s["id"], n["name"]) for n in snap["nodes"] if n["online"] for s in n["storage"]]
+        first = next((n["name"] for n in snap["nodes"] if n["online"]), None)
+        if first:
+            targets += [("*", s["id"], first) for s in snap.get("shared_storage", [])]
+        for key_node, sid, node in targets:
+            try:
+                hist[(key_node, sid)] = [(p["time"], p.get("used")) for p in self.pve.storage_rrd(node, sid, "month")
+                                         if p.get("used") is not None]
+            except Exception as e:  # noqa: BLE001 - no forecast for this one; % rules still work
+                log.debug("storage history %s/%s: %s", node, sid, e)
+        self.storage_hist = hist
+
+    def rrd_series(self, key, rng):
+        """Long-range history for the drawer, from Proxmox's RRD. key: VMID or node name."""
+        if rng not in self.RRD_TTL:
+            return None
+        now = self.clock()
+        hit = self.rrd_cache.get((key, rng))
+        if hit and now - hit[0] < self.RRD_TTL[rng]:
+            return hit[1]
+        g = next((g for g in self.guests if g["vmid"] == key), None) if isinstance(key, int) else None
+        try:
+            if g:
+                pts = self.pve.rrd(g["node"], g["type"], g["vmid"], rng)
+                mem = [(p.get("mem") or 0) / (p.get("maxmem") or 1) for p in pts]
+            elif any(n["name"] == key for n in self.nodes):
+                pts = self.pve.node_rrd(key, rng)
+                mem = [(p.get("memused") or 0) / (p.get("memtotal") or 1) for p in pts]
+            else:
+                return None
+        except Exception as e:  # noqa: BLE001
+            log.debug("rrd %s %s: %s", key, rng, e)
+            return None
+        series = {"t": [p.get("time") for p in pts], "cpu": [round(p.get("cpu") or 0, 4) for p in pts],
+                  "mem": [round(m, 4) for m in mem], "net_in": [round(p.get("netin") or 0) for p in pts],
+                  "net_out": [round(p.get("netout") or 0) for p in pts]}
+        self.rrd_cache[(key, rng)] = (now, series)
+        return series
+
+    def uptime(self):
+        now = self.clock()
+        at, data = self.uptime_cache
+        if at is None or now - at >= 60:
+            data = self.store.uptime(now)
+            self.uptime_cache = (now, data)
+        return data
+
+    def _add_event(self, ev):
+        self.events_log.append(ev)
+        try:
+            self.store.add_event(ev)
+        except Exception as e:  # noqa: BLE001 - the feed still works from memory
+            log.warning("event not stored: %s", e)
 
     # -- discovery plumbing (call with or without the lock; they only touch their own fields) --
 
@@ -518,6 +711,8 @@ class Collector:
             threading.Thread(target=self._delayed_loop, args=(src, step, every, delay), daemon=True,
                              name=step.__name__).start()
         threading.Thread(target=self._probe_loop, daemon=True, name="poll_probes").start()
+        threading.Thread(target=self._delayed_loop, args=("alerts", self.poll_alerts, self.ALERTS, 5),
+                         daemon=True, name="poll_alerts").start()
 
     def _delayed_loop(self, src, step, every, delay):
         if not self._stop.wait(delay):
@@ -554,7 +749,7 @@ class Collector:
                 nodes.append(dict(n, ip=self.node_ips.get(n["name"]), cpu_history=hist,
                                   storage=list(self.storage.get(n["name"], ())),
                                   disks=list(self.disks.get(n["name"], ()))))
-            events = sorted(self.task_ev + list(self.probe_ev) + list(self.disc_ev), key=lambda e: -e["ts"])[:30]
+            events = sorted(self.task_ev + list(self.events_log), key=lambda e: -e["ts"])[:30]
             return {
                 "version": self.version, "now": now, "router": self.router,
                 "sources": {k: dict(v) for k, v in self.sources.items()},
@@ -564,4 +759,5 @@ class Collector:
                 "backups": self.backups,
                 "probes": [st.view(paused=not running.get(st.spec.get("target"), True)) for st in self.checks.values()],
                 "events": events,
+                "attention": list(self.attention),
             }

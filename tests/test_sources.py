@@ -77,3 +77,24 @@ class DemoTests(unittest.TestCase):
         self.assertFalse(net.connect(ip, 22222))
         self.assertEqual(net.fingerprint(ip, 11434).product, "Ollama")
         self.assertTrue(net.probe({"kind": "tcp", "host": ip, "port": 11434}).ok)
+
+
+class RrdTests(unittest.TestCase):
+    def test_rrd_paths(self):
+        c = sources.PveClient("h", 8006, "t", None, tls_name="n")
+        seen = []
+        c._request = lambda path, check_name=True: seen.append(path) or []
+        c.rrd("pve2", "lxc", 201, "week")
+        c.node_rrd("pve1", "day")
+        c.storage_rrd("pve1", "local-lvm", "month")
+        self.assertEqual(seen, ["/nodes/pve2/lxc/201/rrddata?timeframe=week&cf=AVERAGE",
+                                "/nodes/pve1/rrddata?timeframe=day&cf=AVERAGE",
+                                "/nodes/pve1/storage/local-lvm/rrddata?timeframe=month&cf=AVERAGE"])
+
+    def test_demo_rrd_shapes(self):
+        d = demo.DemoPve()
+        pts = d.rrd("pve2", "lxc", 200, "day")
+        self.assertTrue(len(pts) > 100 and {"time", "cpu", "mem", "maxmem", "netin", "netout"} <= set(pts[-1]))
+        self.assertIn("memused", d.node_rrd("pve1", "week")[-1])
+        st = d.storage_rrd("pve2", "local-lvm", "month")
+        self.assertTrue(st[-1]["used"] > st[0]["used"])

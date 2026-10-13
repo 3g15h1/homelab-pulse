@@ -89,3 +89,14 @@ class PveClient:
 
     def tasks(self):
         return self._get("/cluster/tasks")
+
+    # Proxmox keeps these round-robin databases for a year; Pulse reads them for long graphs and
+    # storage forecasts instead of recording metrics itself. timeframe: hour|day|week|month|year
+    def rrd(self, node, kind, vmid, timeframe):
+        return self._get(f"/nodes/{node}/{kind}/{vmid}/rrddata?timeframe={timeframe}&cf=AVERAGE")
+
+    def node_rrd(self, node, timeframe):
+        return self._get(f"/nodes/{node}/rrddata?timeframe={timeframe}&cf=AVERAGE")
+
+    def storage_rrd(self, node, storage, timeframe):
+        return self._get(f"/nodes/{node}/storage/{storage}/rrddata?timeframe={timeframe}&cf=AVERAGE")
