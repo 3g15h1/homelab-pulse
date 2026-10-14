@@ -1,16 +1,19 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Pulse · alerts &amp; settings</title>
-<meta name="theme-color" content="#09090b">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings — Homelab Pulse</title>
 <style>
   :root {
-    --bg: #09090b; --card: #131316; --card2: #18181c; --line: rgba(255,255,255,.06); --line2: rgba(255,255,255,.1);
-    --text: #ececef; --dim: #8b8b94; --faint: #55555d; --accent: #a5b4fc;
-    --ok: #86efac; --warn: #fcd34d; --bad: #f87171; --bad-t: rgba(248,113,113,.13); --r: 18px;
+    --bg:#09090b; --card:#131316; --card2:#18181c;
+    --line:rgba(255,255,255,.06); --line2:rgba(255,255,255,.1);
+    --text:#ececef; --dim:#8b8b94; --faint:#55555d;
+    --accent:#a5b4fc; --accent-t:rgba(165,180,252,.14);
+    --ok:#86efac; --ok-t:rgba(134,239,172,.12);
+    --warn:#fcd34d; --warn-t:rgba(252,211,77,.12);
+    --bad:#f87171; --bad-t:rgba(248,113,113,.13);
+    --r:18px;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--text); }
@@ -21,59 +24,117 @@
   header a:hover { color: var(--text); }
   h1 { font-size: 17px; font-weight: 650; margin: 0; }
   .right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .pill { font-size: 12px; font-weight: 600; border: 1px solid var(--line2); border-radius: 999px;
+    padding: 4px 12px; display: flex; align-items: center; gap: 7px; color: var(--dim); white-space: nowrap; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; margin-bottom: 14px; }
-  .card h2 { font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--dim); margin: 0 0 12px; }
-  .card h3 { font-size: 13.5px; font-weight: 600; margin: 14px 0 8px; }
-  .card h3:first-of-type { margin-top: 0; }
+  .card h2 { font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--dim); margin: 0 0 2px; }
+  .card .sub { font-size: 12.5px; color: var(--dim); margin: 0 0 12px; }
+  .state-line { font-size: 12.5px; color: var(--dim); background: var(--card2); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; }
+  .state-line b { color: var(--text); font-weight: 600; }
   .muted { color: var(--dim); } .faint { color: var(--faint); } .small { font-size: 12.5px; }
-  label { display: block; margin: 8px 0; }
-  label > span { display: block; color: var(--dim); font-size: 12.5px; margin-bottom: 4px; }
-  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
-  .row > label { flex: 1 1 160px; }
+  .rowline { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .rowline:first-of-type { border-top: 0; }
+  .rowline .grow { flex: 1; min-width: 0; }
+  .t { font-weight: 600; font-size: 13.5px; } .d { font-size: 12px; color: var(--dim); }
+  .toggle { position: relative; width: 44px; height: 26px; flex: none; cursor: pointer;
+    background: var(--card2); border: 1px solid var(--line2); border-radius: 999px; transition: background .15s; }
+  .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--dim); transition: all .15s; }
+  .toggle[aria-checked="true"] { background: var(--accent); border-color: transparent; }
+  .toggle[aria-checked="true"]::after { left: 20px; background: #0b0b10; }
+  .toggle:focus-visible { outline: 2px solid rgba(165,180,252,.5); outline-offset: 2px; }
+  label.f { display: block; margin: 8px 0; }
+  label.f > span { display: block; color: var(--dim); font-size: 12.5px; margin-bottom: 4px; }
   input[type=text], input[type=password], input[type=number], input[type=time], input[type=url], select, textarea {
     width: 100%; background: var(--card2); color: var(--text); border: 1px solid var(--line2); border-radius: 10px;
     padding: 8px 10px; font: inherit; }
   textarea { min-height: 64px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
   input:focus, select:focus, textarea:focus { outline: 2px solid rgba(165,180,252,.5); outline-offset: 0; }
   input.bad { border-color: var(--bad); }
-  .check { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
-  .check input { width: 16px; height: 16px; accent-color: #a5b4fc; }
-  .check label { margin: 0; }
+  input.num-sm { width: 76px; padding: 5px 8px; font-size: 12.5px; }
   button { font: inherit; cursor: pointer; border-radius: 10px; padding: 8px 14px; border: 1px solid var(--line2);
-           background: var(--card2); color: var(--text); }
+    background: var(--card2); color: var(--text); }
   button:hover { border-color: rgba(165,180,252,.5); }
   button.primary { background: #a5b4fc; color: #0b0b10; border-color: transparent; font-weight: 600; }
-  button.link { background: none; border: 0; color: var(--dim); padding: 4px 6px; }
+  button.link { background: none; border: 0; color: var(--dim); padding: 4px 6px; font-size: 12.5px; white-space: nowrap; }
   button.link:hover { color: var(--text); }
-  .msg { font-size: 12.5px; margin-left: 8px; }
-  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+  button.ghost { background: none; border: 0; color: var(--dim); padding: 4px 6px; font-size: 12.5px; }
+  button.ghost:hover { color: var(--text); }
+  button:disabled { opacity: .45; cursor: default; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); display: inline-block; }
+  .dot.critical { background: var(--bad); } .dot.warning { background: var(--warn); } .dot.ok { background: var(--ok); }
+  .dot.off { background: var(--faint); opacity: .5; }
   .list .it { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; }
   .list .it:first-child { border-top: 0; }
   .list .it > span:first-of-type { flex: 1; min-width: 0; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
-  .dot.critical { background: var(--bad); } .dot.warning { background: var(--warn); } .dot.ok { background: var(--ok); }
-  .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 18px; }
-  .rule { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
-  .rule:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
-  .demo { border: 1px solid rgba(252,211,77,.25); color: var(--warn); border-radius: 10px; padding: 8px 12px; margin-bottom: 14px; font-size: 13px; }
-  .sticky { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); padding: 18px 0 6px; display: flex; align-items: center; }
-  code { font-size: 12px; color: var(--text); }
-  #login { max-width: 380px; margin: 60px auto; }
-  .modes { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin: 6px 0 12px; }
-  .modes label { margin: 0; border: 1px solid var(--line2); border-radius: 12px; padding: 10px 12px; cursor: pointer; background: var(--card2); }
-  .modes label:has(input:checked) { border-color: rgba(165,180,252,.6); }
-  .modes b { display: block; font-weight: 600; } .modes small { color: var(--dim); }
-  .modes input { display: none; }
+  .modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 10px 0; }
+  .mode { border: 1px solid var(--line2); border-radius: 12px; padding: 10px 12px; cursor: pointer; background: var(--card2); }
+  .mode b { display: block; font-size: 13px; } .mode small { color: var(--dim); font-size: 11.5px; line-height: 1.35; display: block; margin-top: 2px; }
+  .mode[aria-checked="true"] { border-color: rgba(165,180,252,.6); box-shadow: 0 0 0 1px rgba(165,180,252,.6); }
+  .mode .radio { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--dim); display: inline-block; margin-right: 6px; vertical-align: -1px; }
+  .mode[aria-checked="true"] .radio { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 2px var(--card2); }
+  .mode.disabled { opacity: .45; cursor: default; }
+  .note { font-size: 12px; color: var(--dim); background: var(--card2); border-radius: 10px; padding: 8px 12px; margin-top: 8px; }
+  .note.warn { border-left: 3px solid var(--warn); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .chip { border: 1px solid var(--line2); border-radius: 999px; padding: 5px 12px; font-size: 12.5px;
+    background: var(--card2); color: var(--text); cursor: pointer; }
+  .chip[aria-pressed="true"] { background: var(--accent); color: #0b0b10; border-color: transparent; font-weight: 600; }
+  .stepper { display: inline-flex; align-items: center; border: 1px solid var(--line2); border-radius: 10px; overflow: hidden; background: var(--card2); }
+  .stepper button { border: 0; border-radius: 0; padding: 5px 11px; font-size: 14px; background: none; }
+  .stepper .val { min-width: 40px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sentence { font-size: 13.5px; padding: 9px 0; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sentence:first-of-type { border-top: 0; }
+  .mutetag { display: inline-flex; align-items: center; gap: 8px; background: var(--card2); border: 1px solid var(--line2);
+    border-radius: 999px; padding: 5px 8px 5px 12px; font-size: 12.5px; margin: 4px 6px 4px 0; }
+  .mutetag button { border: 0; background: none; padding: 2px 6px; font-size: 12px; color: var(--dim); }
+  .mutetag button:hover { color: var(--text); }
+  .banner-attn { border-left: 3px solid var(--warn); background: var(--card2); border-radius: 0 10px 10px 0;
+    padding: 8px 12px; margin: 6px 0; font-size: 12.5px; }
+  .banner-ok { border-left: 3px solid var(--ok); background: var(--card2); border-radius: 0 10px 10px 0;
+    padding: 8px 12px; margin: 6px 0; font-size: 12.5px; color: var(--dim); }
+  code { font-size: 11.5px; background: var(--card2); padding: 1px 5px; border-radius: 6px; }
+  pre { background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 12px;
+    white-space: pre-wrap; word-break: break-all; margin: 6px 0; }
+  details summary { cursor: pointer; color: var(--dim); font-size: 12.5px; }
+  details.adv { border: 1px solid var(--line); border-radius: var(--r); margin-bottom: 14px; background: var(--card); }
+  details.adv > summary { padding: 14px 16px; font-weight: 700; font-size: 12px; letter-spacing: .6px;
+    text-transform: uppercase; list-style: none; display: flex; align-items: center; }
+  details.adv > summary::-webkit-details-marker { display: none; }
+  details.adv > summary .chev { margin-left: auto; transition: transform .15s; }
+  details.adv[open] > summary .chev { transform: rotate(90deg); }
+  details.adv .body { padding: 0 16px 16px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12.5px; }
+  .kv dt { color: var(--dim); } .kv dd { margin: 0; }
   .badge { font-size: 11px; border: 1px solid var(--line2); border-radius: 999px; padding: 1px 7px; color: var(--dim); white-space: nowrap; }
   .badge.err { color: var(--bad); border-color: rgba(248,113,113,.35); } .badge.ok { color: var(--ok); }
   .recipe { border-top: 1px solid var(--line); padding: 10px 0; }
   .recipe:first-child { border-top: 0; }
   .recipe .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .recipe .head b { flex: 1; min-width: 160px; }
-  .recipe select { width: auto; padding: 4px 8px; }
-  details summary { cursor: pointer; color: var(--dim); font-size: 12.5px; margin-top: 4px; }
-  pre { background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 12px;
-        white-space: pre-wrap; word-break: break-all; margin: 6px 0; }
+  .recipe .head .grow { flex: 1; min-width: 160px; }
+  .recipe select { width: auto; padding: 4px 8px; font-size: 12.5px; }
+  .editbox { background: var(--card2); border-radius: 12px; padding: 12px; margin-top: 10px; }
+  .searchbox { position: relative; }
+  .searchbox .results { position: absolute; top: 100%; left: 0; right: 0; background: var(--card2);
+    border: 1px solid var(--line2); border-radius: 10px; margin-top: 4px; z-index: 20; overflow: hidden; display: none; }
+  .searchbox .results button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0;
+    padding: 9px 12px; font-size: 13px; background: none; }
+  .searchbox .results button:hover { background: var(--accent-t); }
+  .ovr-edit { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+  .ovr-edit input { flex: 1; min-width: 200px; }
+  h3.sub { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); margin: 16px 0 6px; font-weight: 600; }
+  .warnrule { border-top: 1px solid var(--line); padding: 10px 0; }
+  .warnrule:first-of-type { border-top: 0; }
+  .warnrule .head { display: flex; align-items: center; gap: 10px; }
+  .warnrule .head .t { flex: 1; }
+  .warnrule .thr { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; padding-left: 54px; }
+  .warnrule .thr label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); margin: 0; }
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #0b0b10;
+    font-size: 13px; font-weight: 600; border-radius: 999px; padding: 8px 18px; opacity: 0; transition: opacity .25s;
+    pointer-events: none; z-index: 50; white-space: nowrap; }
+  #toast.show { opacity: 1; } #toast.err { background: var(--bad); color: #0b0b10; }
+  #login { max-width: 380px; margin: 60px auto; }
+  .demo { border: 1px solid rgba(252,211,77,.25); color: var(--warn); border-radius: 10px; padding: 8px 12px; margin-bottom: 14px; font-size: 13px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -81,8 +142,11 @@
 <div class="wrap">
   <header>
     <a href="/">← Pulse</a>
-    <h1>Alerts &amp; settings</h1>
-    <div class="right"><button class="link" id="signout" hidden>Sign out</button></div>
+    <h1>Settings</h1>
+    <div class="right">
+      <div class="pill" id="pill" hidden><span class="dot ok" id="pillDot"></span><span id="pillText">Alerting on</span></div>
+      <button class="link" id="signout" hidden>Sign out</button>
+    </div>
   </header>
   <div class="demo" id="demoNote" hidden>Demo mode: the admin password is <b>demo</b>, and nothing is stored.</div>
 
@@ -91,117 +155,182 @@
     <p class="muted small" id="loginHelp">Viewing the dashboard is open to everyone; changing settings needs the admin password.
       The installer printed it; you can set a new one in the Pulse container with <code>homelab-pulse-passwd</code>.</p>
     <form id="loginForm">
-      <label><span>Admin password</span><input type="password" id="pw" autocomplete="current-password" required></label>
-      <button class="primary" type="submit">Sign in</button><span class="msg" id="loginMsg"></span>
+      <label class="f"><span>Admin password</span><input type="password" id="pw" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">Sign in</button> <span class="muted small" id="loginMsg"></span>
     </form>
   </section>
 
   <main id="app" hidden>
     <section class="card">
-      <h2>Needs attention now</h2>
-      <div class="list" id="attention"><span class="muted">Nothing. Everything looks fine.</span></div>
+      <h2>Right now</h2>
+      <p class="sub">The current state of alerting, in one glance.</p>
+      <div class="state-line" id="statusLine"><span class="muted">Loading…</span></div>
+      <div id="attnList"></div>
     </section>
 
     <section class="card">
-      <h2>Where alerts go</h2>
-      <h3>Webhook</h3>
-      <p class="muted small">Pulse POSTs JSON (<code>title, message, severity, state, items, url</code>) to this address.
-        A Home Assistant <i>webhook</i> automation can turn it into a phone notification.</p>
-      <div class="check"><input type="checkbox" id="wh_enabled"><label for="wh_enabled">Send alerts to the webhook</label></div>
-      <label><span>URL</span><input type="url" id="wh_url" placeholder="http://homeassistant.local:8123/api/webhook/pulse-alerts"></label>
-      <label><span>Extra headers, one per line (<code>Name: value</code>), e.g. Authorization</span>
-        <textarea id="wh_headers" spellcheck="false"></textarea></label>
-      <div class="check"><input type="checkbox" id="wh_insecure"><label for="wh_insecure">Accept a self-signed certificate</label></div>
-      <button data-test="webhook">Save &amp; send test</button><span class="msg" id="msg_webhook"></span>
-
-      <h3 style="margin-top:22px">ntfy</h3>
-      <p class="muted small">Push to an <a href="https://ntfy.sh" style="color:var(--accent)">ntfy</a> topic; the ntfy app shows it on your phone.</p>
-      <div class="check"><input type="checkbox" id="nt_enabled"><label for="nt_enabled">Send alerts to ntfy</label></div>
-      <div class="row">
-        <label><span>Server</span><input type="url" id="nt_server" placeholder="https://ntfy.sh"></label>
-        <label><span>Topic</span><input type="text" id="nt_topic" placeholder="my-lab-alerts-8f3k" maxlength="64"></label>
+      <h2>Notifications</h2>
+      <p class="sub">How Pulse reaches you when something needs attention.</p>
+      <div class="state-line" id="notifState"><span class="muted">Loading…</span></div>
+      <div class="rowline">
+        <span class="dot off" id="whDot"></span>
+        <div class="grow"><div class="t">Home Assistant webhook</div><div class="d" id="whSub">Loading…</div></div>
+        <button class="ghost" id="whTest">Send test</button>
+        <button class="ghost" id="whEditBtn">Edit</button>
+        <div class="toggle" role="switch" id="whToggle" tabindex="0" aria-checked="false" aria-label="Home Assistant webhook enabled"></div>
       </div>
-      <label><span>Access token (optional)</span><input type="password" id="nt_token" autocomplete="off" placeholder="tk_…"></label>
-      <div class="check"><input type="checkbox" id="nt_insecure"><label for="nt_insecure">Accept a self-signed certificate</label></div>
-      <button data-test="ntfy">Save &amp; send test</button><span class="msg" id="msg_ntfy"></span>
-    </section>
-
-    <section class="card" id="healCard">
-      <h2>Self-healing</h2>
-      <p class="muted small">When a check fails, Pulse can try a first-response fix before alerting you: restart the service or
-        Docker container behind it, or run a recipe. Fixes run through the gate on your Proxmox host, which only runs
-        recipes defined there. <a href="https://github.com/3g15h1/homelab-pulse/blob/main/docs/recipes.md" style="color:var(--accent)">How recipes work</a></p>
-      <div id="gateStatus" class="small" style="margin-bottom:10px"></div>
-      <div class="modes" id="healModes">
-        <label><input type="radio" name="hmode" value="off"><b>Off</b><small>Never run fixes.</small></label>
-        <label><input type="radio" name="hmode" value="dry_run"><b>Dry run</b><small>Log what would run; change nothing.</small></label>
-        <label><input type="radio" name="hmode" value="ask"><b>Ask first</b><small>Alerts get a "Run fix" button.</small></label>
-        <label><input type="radio" name="hmode" value="auto"><b>Automatic</b><small>Run fixes, then tell you how it went.</small></label>
+      <div class="editbox" id="whEdit" hidden>
+        <label class="f"><span>Webhook URL</span><input type="url" id="wh_url" placeholder="http://homeassistant.local:8123/api/webhook/pulse-alerts"></label>
+        <label class="f"><span>Extra headers, one per line (<code>Name: value</code>), e.g. Authorization</span><textarea id="wh_headers" spellcheck="false"></textarea></label>
+        <div class="check-row"><label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:6px 0">
+          <input type="checkbox" id="wh_insecure" style="width:16px;height:16px;accent-color:#a5b4fc"> Accept a self-signed certificate</label></div>
+        <div class="note">Pulse POSTs JSON (<code>title, message, severity, state, items, url</code>) to this address.
+          A Home Assistant <i>webhook</i> automation can turn it into a phone notification.</div>
       </div>
-      <div id="healAsks"></div>
-      <h3>Recipes</h3>
-      <div id="healRecipes" class="muted small">Loading…</div>
-      <button id="healSave" style="margin-top:10px">Save self-healing</button><span class="msg" id="healMsg"></span>
-      <h3 style="margin-top:20px">What each check would restart</h3>
-      <p class="muted small">Learned automatically while the check is healthy. Override if Pulse picked the wrong thing, or turn healing off for a check.</p>
-      <div class="list" id="healTargets"></div>
-      <h3 style="margin-top:20px">Recent fixes</h3>
-      <div class="list" id="healHistory"><span class="muted">None yet.</span></div>
+      <div class="rowline">
+        <span class="dot off" id="ntDot"></span>
+        <div class="grow"><div class="t">ntfy</div><div class="d" id="ntSub">Loading…</div></div>
+        <button class="ghost" id="ntTest">Send test</button>
+        <button class="ghost" id="ntEditBtn">Edit</button>
+        <div class="toggle" role="switch" id="ntToggle" tabindex="0" aria-checked="false" aria-label="ntfy enabled"></div>
+      </div>
+      <div class="editbox" id="ntEdit" hidden>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <label class="f" style="flex:1;min-width:180px"><span>Server</span><input type="url" id="nt_server" placeholder="https://ntfy.sh"></label>
+          <label class="f" style="flex:1;min-width:180px"><span>Topic</span><input type="text" id="nt_topic" placeholder="my-lab-alerts-8f3k" maxlength="64"></label>
+        </div>
+        <label class="f"><span>Access token (optional)</span><input type="password" id="nt_token" autocomplete="off" placeholder="tk_…"></label>
+        <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:6px 0">
+          <input type="checkbox" id="nt_insecure" style="width:16px;height:16px;accent-color:#a5b4fc"> Accept a self-signed certificate</label>
+        <div class="note">Push to an <a href="https://ntfy.sh" style="color:var(--accent)">ntfy</a> topic; the ntfy app shows it on your phone.</div>
+      </div>
+      <h3 class="sub">Recent notifications</h3>
+      <div class="list" id="notifLog"><span class="muted">Loading…</span></div>
     </section>
 
     <section class="card">
-      <h2>When to alert</h2>
-      <div class="grid2" id="kinds"></div>
-      <div class="row" style="margin-top:8px">
-        <label><span>A service must be down for (minutes)</span><input type="number" id="down_after" min="0" max="1440"></label>
-        <label><span>Group alerts arriving within (seconds)</span><input type="number" id="group_window" min="0" max="3600"></label>
-        <label><span>Remind while still broken every (hours, 0 = never)</span><input type="number" id="repeat_h" min="0" max="168"></label>
+      <h2>When Pulse speaks up</h2>
+      <p class="sub">What earns a notification, and when it stays quiet.</p>
+      <div class="state-line" id="speakState"><span class="muted">Loading…</span></div>
+      <h3 class="sub">Tell me about</h3>
+      <div id="kinds"></div>
+      <h3 class="sub">Timing</h3>
+      <div class="sentence">Wait
+        <span class="stepper"><button data-step="downMin,-1" aria-label="decrease">−</button><span class="val" id="downMinVal">3</span><button data-step="downMin,1" aria-label="increase">+</button></span>
+        min before telling me something is down <span class="muted small">(ignores brief blips)</span>
       </div>
-      <div class="check"><input type="checkbox" id="send_recovery"><label for="send_recovery">Send a message when a problem is fixed</label></div>
-      <h3>Quiet hours</h3>
-      <div class="check"><input type="checkbox" id="q_enabled"><label for="q_enabled">Hold non-urgent alerts and send one summary afterwards</label></div>
-      <div class="row">
-        <label><span>From</span><input type="time" id="q_start"></label>
-        <label><span>Until</span><input type="time" id="q_end"></label>
+      <div class="sentence">Group alerts arriving within
+        <input type="number" class="num-sm" id="groupSecs" min="0" max="3600"> seconds into one message
       </div>
-      <div class="check"><input type="checkbox" id="q_crit"><label for="q_crit">Hold critical alerts too</label></div>
+      <div class="sentence">If it's still broken, remind me every
+        <span class="stepper"><button data-step="remindH,-1" aria-label="decrease">−</button><span class="val" id="remindHVal">0</span><button data-step="remindH,1" aria-label="increase">+</button></span>
+        h <span class="muted small">(0 = never)</span>
+      </div>
+      <div class="rowline" style="margin-top:4px">
+        <div class="grow"><div class="t">Tell me when it's fixed</div><div class="d">A short recovery message when a problem clears</div></div>
+        <div class="toggle" role="switch" id="recToggle" tabindex="0" aria-checked="true" aria-label="Send recovery messages"></div>
+      </div>
+      <h3 class="sub">Quiet hours</h3>
+      <div class="rowline">
+        <div class="grow"><div class="t">Hold non-urgent alerts overnight</div><div class="d">One summary in the morning instead of pings</div></div>
+        <div class="toggle" role="switch" id="qToggle" tabindex="0" aria-checked="false" aria-label="Quiet hours"></div>
+      </div>
+      <div id="qBody" hidden>
+        <div class="sentence">Quiet from <input type="time" id="q_start" style="width:auto"> to <input type="time" id="q_end" style="width:auto"></div>
+        <div class="sentence">During quiet hours:
+          <select id="q_crit" style="width:auto">
+            <option value="crit">Always tell me about critical problems</option>
+            <option value="all">Hold everything, even critical</option>
+          </select>
+        </div>
+      </div>
     </section>
 
     <section class="card">
       <h2>Early warnings</h2>
-      <div id="warnings"></div>
+      <p class="sub">Pulse watches trends and warns you before things actually break. Tune each watch below.</p>
+      <div id="warnings"><span class="muted">Loading…</span></div>
     </section>
 
     <section class="card">
-      <h2>Muted</h2>
-      <div class="list" id="mutes"></div>
-      <div class="row" style="margin-top:10px">
-        <label><span>Mute</span><select id="m_target"></select></label>
-        <label><span>For</span><select id="m_for">
-          <option value="60">1 hour</option><option value="480">8 hours</option><option value="1440">1 day</option>
-          <option value="10080">1 week</option><option value="rec">until it recovers</option><option value="ever">until I unmute</option></select></label>
-        <button id="m_add" type="button" style="flex:0 0 auto">Mute</button>
+      <h2>Silenced</h2>
+      <p class="sub">Things you've muted. They still get checked — you just don't hear about them.</p>
+      <div id="muteList" style="margin-bottom:8px"><span class="muted">Loading…</span></div>
+      <h3 class="sub">Mute something</h3>
+      <div class="searchbox">
+        <input type="text" id="muteSearch" placeholder="Start typing — a guest, a check, a node…" autocomplete="off">
+        <div class="results" id="muteResults"></div>
+      </div>
+      <div class="chips" id="durChips">
+        <button class="chip" data-dur="60" aria-pressed="true">1 hour</button>
+        <button class="chip" data-dur="480" aria-pressed="false">8 hours</button>
+        <button class="chip" data-dur="1440" aria-pressed="false">1 day</button>
+        <button class="chip" data-dur="10080" aria-pressed="false">1 week</button>
+        <button class="chip" data-dur="rec" aria-pressed="false">Until it recovers</button>
+        <button class="chip" data-dur="ever" aria-pressed="false">Until I unmute</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <button class="primary" id="muteAdd" disabled>Mute</button>
+        <span class="muted small" id="mutePickLabel">Pick something above first</span>
       </div>
     </section>
 
     <section class="card">
-      <h2>Recent deliveries</h2>
-      <div class="list" id="deliveries"><span class="muted">None yet.</span></div>
+      <h2>Self-healing</h2>
+      <p class="sub">When a check fails, Pulse can try a first-response fix before alerting you. Fixes run through the
+        gate on your Proxmox host, which only runs recipes defined there.</p>
+      <div class="state-line" id="healState"><span class="muted">Loading…</span></div>
+      <div class="modes" id="healModes" role="radiogroup" aria-label="Self-healing mode">
+        <div class="mode" data-mode="off" role="radio" tabindex="0" aria-checked="false"><b><span class="radio"></span>Off</b><small>Never run fixes. Alerts only.</small></div>
+        <div class="mode" data-mode="dry_run" role="radio" tabindex="0" aria-checked="false"><b><span class="radio"></span>Dry run</b><small>Log what <i>would</i> run. Changes nothing.</small></div>
+        <div class="mode" data-mode="ask" role="radio" tabindex="0" aria-checked="false"><b><span class="radio"></span>Ask first</b><small>Alerts get a "Run fix" button.</small></div>
+        <div class="mode" data-mode="auto" role="radio" tabindex="0" aria-checked="false"><b><span class="radio"></span>Automatic</b><small>Run fixes, then tell you how it went.</small></div>
+      </div>
+      <div class="note warn" id="autoNote" hidden><b>Automatic mode:</b> Pulse restarts services or Docker containers on your Proxmox host.
+        It never touches Pulse itself, runs at most 10 fixes/hour, and you can stop everything with the kill switch
+        at <code>/etc/pulse-heal/enabled</code> on the host.</div>
+      <div class="note" id="dryNote" hidden><b>Dry run:</b> fixes are logged under Activity below — nothing is restarted.
+        A safe way to see what Pulse <i>would</i> do.</div>
+      <div id="healAsks"></div>
+      <h3 class="sub">Fixes Pulse knows</h3>
+      <div id="healRecipes"><span class="muted">Loading…</span></div>
+      <h3 class="sub">If this breaks, Pulse restarts…</h3>
+      <p class="muted small" style="margin:0 0 6px">Learned automatically while a check is healthy. Change it if Pulse picked the wrong thing, or turn healing off per check.</p>
+      <div class="list" id="healTargets"><span class="muted">Loading…</span></div>
     </section>
 
     <section class="card">
-      <h2>Admin password</h2>
-      <form id="pwForm" class="row">
-        <label><span>Current</span><input type="password" id="pw_cur" autocomplete="current-password" required></label>
-        <label><span>New (10+ characters)</span><input type="password" id="pw_new" autocomplete="new-password" minlength="10" required></label>
-        <button type="submit" style="flex:0 0 auto">Change</button>
-      </form>
-      <span class="msg" id="pwMsg"></span>
+      <h2>Activity</h2>
+      <p class="sub">What Pulse has done recently — notifications sent and fixes attempted.</p>
+      <div class="chips" id="actFilter">
+        <button class="chip" data-f="all" aria-pressed="true">All</button>
+        <button class="chip" data-f="notif" aria-pressed="false">Notifications</button>
+        <button class="chip" data-f="fix" aria-pressed="false">Fixes</button>
+      </div>
+      <div class="list" id="actLog"><span class="muted">Loading…</span></div>
     </section>
 
-    <div class="sticky"><button class="primary" id="save">Save settings</button><span class="msg" id="saveMsg"></span></div>
+    <details class="adv">
+      <summary>Advanced <span class="chev">›</span></summary>
+      <div class="body">
+        <h3 class="sub">Webhook payload</h3>
+        <div class="note">Pulse POSTs JSON with <code>title, message, severity, state, items, url</code>.</div>
+        <h3 class="sub">Healing gate</h3>
+        <div class="state-line" id="gateLine"><span class="muted">Loading…</span></div>
+        <h3 class="sub">Admin password</h3>
+        <form id="pwForm" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+          <label class="f" style="flex:1;min-width:160px"><span>Current</span><input type="password" id="pw_cur" autocomplete="current-password" required></label>
+          <label class="f" style="flex:1;min-width:160px"><span>New (10+ characters)</span><input type="password" id="pw_new" autocomplete="new-password" minlength="10" required></label>
+          <button type="submit" style="flex:0 0 auto">Change</button>
+        </form>
+        <span class="muted small" id="pwMsg"></span>
+      </div>
+    </details>
+
+    <p class="muted small" style="text-align:center">Changes save automatically — look for the "Saved" confirmation.</p>
   </main>
 </div>
+<div id="toast"></div>
 
 <script>
 "use strict";
@@ -209,7 +338,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); if (s < 60) return "just now"; if (s < 3600) return `${Math.round(s / 60)} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`; return `${Math.round(s / 86400)} d ago`; };
-let CFG = null, STATE = null;
+let CFG = null, STATE = null, HEAL = null, MUTES = [], DELIVERIES = [];
 
 async function api(method, path, body) {
   const r = await fetch(path, { method, headers: { "X-Pulse-Request": "1", "Content-Type": "application/json" },
@@ -218,208 +347,423 @@ async function api(method, path, body) {
   if (r.status === 401 && path !== "/api/login") showLogin();
   return { ok: r.ok, status: r.status, data: data || {} };
 }
-function msg(id, text, ok) { const m = $(id); m.textContent = text; m.className = "msg " + (ok ? "ok" : "bad"); }
+
+let toastT = null;
+function toast(text, isErr) {
+  const t = $("toast"); t.textContent = text; t.className = isErr ? "err" : ""; t.classList.add("show");
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 1600);
+}
 
 /* ---------- sign in ---------- */
-function showLogin() { $("login").hidden = false; $("app").hidden = true; $("signout").hidden = true; $("pw").focus(); }
+function showLogin() { $("login").hidden = false; $("app").hidden = true; $("signout").hidden = true; $("pill").hidden = true; $("pw").focus(); }
 $("loginForm").onsubmit = async (e) => {
   e.preventDefault();
   const r = await api("POST", "/api/login", { password: $("pw").value });
-  if (r.ok) { $("pw").value = ""; msg("loginMsg", "", true); start(); }
-  else msg("loginMsg", r.data.error || "Sign-in failed", false);
+  if (r.ok) { $("pw").value = ""; $("loginMsg").textContent = ""; start(); }
+  else $("loginMsg").textContent = r.data.error || "Sign-in failed";
 };
 $("signout").onclick = async () => { await api("POST", "/api/logout"); showLogin(); };
 
-/* ---------- form <-> settings ---------- */
-const KINDS = { service_down: "A service stops answering", node_offline: "A Proxmox node goes offline",
-  api_down: "Pulse can't reach Proxmox", guest_stopped: "A guest stops unexpectedly", backup_failed: "A backup job fails",
-  warning: "Early warnings (below)" };
+/* ---------- labels ---------- */
+const KINDS = [
+  ["service_down", "A service stops answering", "Problems"],
+  ["node_offline", "A Proxmox node goes offline", "Problems"],
+  ["api_down", "Pulse can't reach Proxmox", "Problems"],
+  ["guest_stopped", "A guest stops unexpectedly", "Problems"],
+  ["backup_failed", "A backup job fails", "Problems"],
+  ["warning", "Early warnings", "Watches"],
+];
 const WARN = {
-  storage_full: ["Storage filling up", { warn_days: "warn when full in (days)", crit_days: "critical when full in (days)", warn_pct: "or above (%)", crit_pct: "critical above (%)" }],
-  cert_expiry: ["Certificates expiring", { warn_days: "warn within (days)", crit_days: "critical within (days)" }],
-  ssd_wear: ["SSD wear", { warn_pct: "warn at (% used)", crit_pct: "critical at (% used)" }],
-  smart: ["SMART health not passing", {}],
-  backup_stale: ["Guest without a recent backup", { hours: "after (hours)" }],
-  node_memory: ["Node memory high", { pct: "above (%)", minutes: "for (minutes)" }],
-  ct_disk: ["Container disk filling up", { warn_pct: "warn above (%)", crit_pct: "critical above (%)" }],
+  storage_full: ["Storage filling up", [["warn_days", "warn when full within (days)"], ["crit_days", "critical when full within (days)"], ["warn_pct", "or above (%)"], ["crit_pct", "critical above (%)"]]],
+  cert_expiry: ["Certificates expiring", [["warn_days", "warn within (days)"], ["crit_days", "critical within (days)"]]],
+  ssd_wear: ["SSD wear", [["warn_pct", "warn at (% used)"], ["crit_pct", "critical at (% used)"]]],
+  smart: ["SMART health not passing", []],
+  backup_stale: ["Guest without a recent backup", [["hours", "stale after (hours)"]]],
+  node_memory: ["Node memory high", [["pct", "above (%)"], ["minutes", "for (minutes)"]]],
+  ct_disk: ["Container disk filling up", [["warn_pct", "warn above (%)"], ["crit_pct", "critical above (%)"]]],
 };
+const MODE_LABEL = { off: "Off", dry_run: "Dry run", ask: "Ask first", auto: "Automatic" };
+const SRC_LABEL = { "built-in": "built-in", "local": "yours", "local override": "yours (overrides built-in)" };
 
+/* ---------- form <-> settings ---------- */
 function fill(c) {
   CFG = c;
   const w = c.notify.webhook, n = c.notify.ntfy, a = c.alerts;
-  $("wh_enabled").checked = w.enabled; $("wh_url").value = w.url; $("wh_insecure").checked = w.insecure;
+  $("wh_url").value = w.url; $("wh_insecure").checked = w.insecure;
   $("wh_headers").value = Object.entries(w.headers).map(([k, v]) => `${k}: ${v}`).join("\n");
-  $("nt_enabled").checked = n.enabled; $("nt_server").value = n.server; $("nt_topic").value = n.topic;
-  $("nt_token").value = n.token; $("nt_insecure").checked = n.insecure;
-  $("kinds").innerHTML = Object.entries(KINDS).map(([k, label]) =>
-    `<div class="check"><input type="checkbox" id="k_${k}" ${a.kinds[k] ? "checked" : ""}><label for="k_${k}">${label}</label></div>`).join("");
-  $("down_after").value = Math.round(a.down_after_s / 60); $("group_window").value = a.group_window_s;
-  $("repeat_h").value = Math.round(a.repeat_every_s / 3600); $("send_recovery").checked = a.send_recovery;
-  $("q_enabled").checked = a.quiet.enabled; $("q_start").value = a.quiet.start; $("q_end").value = a.quiet.end;
-  $("q_crit").checked = a.quiet.critical_too;
-  $("warnings").innerHTML = Object.entries(WARN).map(([rule, [label, fields]]) => `<div class="rule">
-    <div class="check"><input type="checkbox" id="w_${rule}" ${c.warnings[rule].enabled ? "checked" : ""}><label for="w_${rule}"><b>${label}</b></label></div>
-    ${Object.keys(fields).length ? `<div class="row">${Object.entries(fields).map(([f, l]) =>
-      `<label><span>${l}</span><input type="number" id="w_${rule}_${f}" value="${c.warnings[rule][f]}"></label>`).join("")}</div>` : ""}</div>`).join("");
+  setToggle("whToggle", w.enabled);
+  $("nt_server").value = n.server; $("nt_topic").value = n.topic; $("nt_token").value = n.token;
+  $("nt_insecure").checked = n.insecure; setToggle("ntToggle", n.enabled);
+  $("kinds").innerHTML = KINDS.map(([k, label]) =>
+    `<div class="rowline"><div class="grow"><div class="t">${esc(label)}</div></div>
+     <div class="toggle" role="switch" id="k_${k}" tabindex="0" aria-checked="${a.kinds[k] ? "true" : "false"}" aria-label="${esc(label)}"></div></div>`).join("");
+  for (const [k] of KINDS) bindToggle(`k_${k}`, () => { CFG.alerts.kinds[k] = !CFG.alerts.kinds[k]; autoSave(); });
+  $("downMinVal").textContent = Math.round(a.down_after_s / 60);
+  $("groupSecs").value = a.group_window_s;
+  $("remindHVal").textContent = Math.round(a.repeat_every_s / 3600);
+  setToggle("recToggle", a.send_recovery);
+  setToggle("qToggle", a.quiet.enabled);
+  $("q_start").value = a.quiet.start; $("q_end").value = a.quiet.end;
+  $("q_crit").value = a.quiet.critical_too ? "all" : "crit";
+  $("qBody").hidden = !a.quiet.enabled;
+  $("warnings").innerHTML = Object.entries(WARN).map(([rule, [label, fields]]) => `
+    <div class="warnrule">
+      <div class="head">
+        <div class="toggle" role="switch" id="w_${rule}" tabindex="0" aria-checked="${c.warnings[rule].enabled ? "true" : "false"}" aria-label="${esc(label)}"></div>
+        <div class="t">${esc(label)}</div>
+      </div>
+      ${fields.length ? `<div class="thr">${fields.map(([f, l]) =>
+        `<label>${esc(l)} <input type="number" class="num-sm" id="w_${rule}_${f}" value="${c.warnings[rule][f]}"></label>`).join("")}</div>` : ""}
+    </div>`).join("");
+  for (const rule of Object.keys(WARN)) {
+    bindToggle(`w_${rule}`, () => { CFG.warnings[rule].enabled = !CFG.warnings[rule].enabled; autoSave(); });
+    for (const [f] of WARN[rule][1]) {
+      $(`w_${rule}_${f}`).addEventListener("change", () => {
+        CFG.warnings[rule][f] = Number($(`w_${rule}_${f}`).value); autoSave();
+      });
+    }
+  }
+  renderNotifState(); renderSpeakState();
 }
 
 function collect() {
   const c = structuredClone(CFG), w = c.notify.webhook, n = c.notify.ntfy, a = c.alerts;
-  const num = (id) => Number($(id).value);
-  w.enabled = $("wh_enabled").checked; w.url = $("wh_url").value.trim(); w.insecure = $("wh_insecure").checked;
+  w.enabled = isOn("whToggle"); w.url = $("wh_url").value.trim(); w.insecure = $("wh_insecure").checked;
   w.headers = {};
   for (const line of $("wh_headers").value.split("\n")) {
     const i = line.indexOf(":"); if (i > 0) w.headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
-  n.enabled = $("nt_enabled").checked; n.server = $("nt_server").value.trim() || "https://ntfy.sh";
+  n.enabled = isOn("ntToggle"); n.server = $("nt_server").value.trim() || "https://ntfy.sh";
   n.topic = $("nt_topic").value.trim(); n.token = $("nt_token").value.trim(); n.insecure = $("nt_insecure").checked;
-  for (const k of Object.keys(KINDS)) a.kinds[k] = $(`k_${k}`).checked;
-  a.down_after_s = num("down_after") * 60; a.group_window_s = num("group_window"); a.repeat_every_s = num("repeat_h") * 3600;
-  a.send_recovery = $("send_recovery").checked;
-  a.quiet = { enabled: $("q_enabled").checked, start: $("q_start").value || "23:00", end: $("q_end").value || "07:00",
-              critical_too: $("q_crit").checked };
-  for (const [rule, [, fields]] of Object.entries(WARN)) {
-    c.warnings[rule].enabled = $(`w_${rule}`).checked;
-    for (const f of Object.keys(fields)) c.warnings[rule][f] = num(`w_${rule}_${f}`);
+  for (const [k] of KINDS) a.kinds[k] = isOn(`k_${k}`);
+  a.down_after_s = num("downMinVal") * 60; a.group_window_s = num("groupSecs"); a.repeat_every_s = num("remindHVal") * 3600;
+  a.send_recovery = isOn("recToggle");
+  a.quiet = { enabled: isOn("qToggle"), start: $("q_start").value || "23:00", end: $("q_end").value || "07:00",
+              critical_too: $("q_crit").value === "all" };
+  for (const rule of Object.keys(WARN)) {
+    c.warnings[rule].enabled = isOn(`w_${rule}`);
+    for (const [f] of WARN[rule][1]) c.warnings[rule][f] = Number($(`w_${rule}_${f}`).value);
   }
   return c;
 }
+const num = (id) => { const v = Number($(id).value !== undefined ? $(id).value : $(id).textContent); return Number.isFinite(v) ? v : 0; };
+const isOn = (id) => $(id).getAttribute("aria-checked") === "true";
+function setToggle(id, on) { $(id).setAttribute("aria-checked", on ? "true" : "false"); }
+function bindToggle(id, onFlip) {
+  const el = $(id);
+  const flip = () => { setToggle(id, !isOn(id)); onFlip(); };
+  el.onclick = flip;
+  el.onkeydown = (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
+}
 
-const FIELD = { "notify.webhook.url": "wh_url", "notify.ntfy.topic": "nt_topic", "notify.ntfy.server": "nt_server",
-  "notify.ntfy.token": "nt_token", "alerts.quiet.start": "q_start", "alerts.quiet.end": "q_end",
-  "alerts.down_after_s": "down_after", "alerts.group_window_s": "group_window", "alerts.repeat_every_s": "repeat_h" };
-async function save() {
+let saveTimer = null;
+function autoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveSettings, 700); }
+function fieldIdFor(path) {
+  const direct = { "notify.webhook.url": "wh_url", "notify.ntfy.topic": "nt_topic", "notify.ntfy.server": "nt_server",
+    "notify.ntfy.token": "nt_token", "alerts.quiet.start": "q_start", "alerts.quiet.end": "q_end" };
+  if (direct[path]) return direct[path];
+  if (path.startsWith("warnings.")) { const [, rule, f] = path.split("."); return `w_${rule}_${f}`; }
+  return null;
+}
+async function saveSettings() {
   document.querySelectorAll("input.bad").forEach((i) => i.classList.remove("bad"));
   const r = await api("PUT", "/api/settings", collect());
-  if (r.ok) { fill(r.data.settings); msg("saveMsg", "Saved.", true); return true; }
-  const p = r.data.path || "", el = FIELD[p] || (p.startsWith("warnings.") ? `w_${p.split(".")[1]}_${p.split(".")[2]}` : null);
-  if (el && $(el)) { $(el).classList.add("bad"); $(el).focus(); }
-  msg("saveMsg", `Not saved: ${p ? p + " " : ""}${r.data.error || r.status}`, false);
+  if (r.ok) { fill(r.data.settings); toast("Saved ✓"); return true; }
+  const p = r.data.path || "", elId = fieldIdFor(p);
+  if (elId && $(elId)) { $(elId).classList.add("bad"); $(elId).focus(); }
+  toast(`Not saved: ${p ? p + " " : ""}${r.data.error || r.status}`, true);
   return false;
 }
-$("save").onclick = save;
-document.querySelectorAll("[data-test]").forEach((b) => b.onclick = async () => {
-  const ch = b.dataset.test; msg(`msg_${ch}`, "Sending…", true);
-  if (!(await save())) { msg(`msg_${ch}`, "Fix the settings first.", false); return; }
+
+/* ---------- notifications ---------- */
+function bindEdit(btnId, boxId) {
+  $(btnId).onclick = () => { const box = $(boxId), open = box.hidden; box.hidden = !open; $(btnId).textContent = open ? "Done" : "Edit"; };
+}
+bindEdit("whEditBtn", "whEdit"); bindEdit("ntEditBtn", "ntEdit");
+for (const id of ["wh_url", "wh_headers", "wh_insecure", "nt_server", "nt_topic", "nt_token", "nt_insecure"]) {
+  $(id).addEventListener("change", autoSave);
+}
+bindToggle("whToggle", autoSave); bindToggle("ntToggle", autoSave);
+bindToggle("recToggle", autoSave); bindToggle("qToggle", () => { $("qBody").hidden = !isOn("qToggle"); autoSave(); });
+for (const id of ["q_start", "q_end", "q_crit"]) $(id).addEventListener("change", autoSave);
+$("groupSecs").addEventListener("change", autoSave);
+document.querySelectorAll("[data-step]").forEach((b) => b.onclick = () => {
+  const [key, d] = b.dataset.step.split(","), el = $(key + "Val");
+  const max = key === "downMin" ? 1440 : 168;
+  el.textContent = Math.max(0, Math.min(max, Number(el.textContent) + Number(d)));
+  autoSave();
+});
+async function testChannel(ch, btn) {
+  btn.disabled = true; const t = btn.textContent; btn.textContent = "Saving…";
+  clearTimeout(saveTimer); saveTimer = null;
+  if (!(await saveSettings())) { btn.textContent = t; btn.disabled = false; return; }
+  btn.textContent = "Sending…";
   const r = await api("POST", "/api/test-notify", { channel: ch });
   const res = (r.data.results || [])[0];
-  msg(`msg_${ch}`, res ? (res.ok ? "Delivered ✓" : `Failed: ${res.error || res.status}`) : (r.data.error || "Failed"), Boolean(res && res.ok));
-  loadDeliveries();
-});
+  const ok = Boolean(res && res.ok);
+  toast(res ? (ok ? "Delivered ✓" : `Failed: ${res.error || res.status}`) : (r.data.error || "Failed"), !ok);
+  btn.textContent = t; btn.disabled = false; loadDeliveries();
+}
+$("whTest").onclick = (e) => testChannel("webhook", e.target);
+$("ntTest").onclick = (e) => testChannel("ntfy", e.target);
 
-/* ---------- attention, mutes, deliveries ---------- */
+function lastDelivery(channel) {
+  const d = DELIVERIES.filter((x) => (x.channel || "").toLowerCase().includes(channel));
+  return d.length ? Math.max(...d.map((x) => x.ts)) : null;
+}
+function renderNotifState() {
+  const w = CFG.notify.webhook, n = CFG.notify.ntfy;
+  const on = w.enabled || n.enabled;
+  $("pill").hidden = false;
+  $("pillText").textContent = on ? "Alerting on" : "Alerting off";
+  $("pillDot").className = "dot " + (on ? "ok" : "off");
+  $("whDot").className = "dot " + (w.enabled ? "ok" : "off");
+  $("ntDot").className = "dot " + (n.enabled ? "ok" : "off");
+  const wl = lastDelivery("webhook"), nl = lastDelivery("ntfy");
+  $("whSub").textContent = w.enabled ? (wl ? `Last delivered ${ago(wl)}` : "Enabled — nothing sent yet") : "Off — nothing is sent here";
+  $("ntSub").textContent = n.enabled ? (nl ? `Last delivered ${ago(nl)}` : "Enabled — nothing sent yet") : "Off — nothing is sent here";
+  $("ntTest").disabled = !n.enabled; $("whTest").disabled = !w.enabled;
+  $("notifState").innerHTML = on
+    ? `Alerts currently go to <b>${[w.enabled ? "Home Assistant webhook" : null, n.enabled ? "ntfy" : null].filter(Boolean).join("</b> and <b>")}</b>.`
+    : `<b style="color:var(--bad)">No channel enabled — you will not hear about problems.</b>`;
+}
+function renderSpeakState() {
+  const a = CFG.alerts;
+  const kinds = KINDS.filter(([k]) => a.kinds[k]).map(([, l]) => l);
+  $("speakState").innerHTML = `You hear about <b>${kinds.length ? esc(kinds.join(", ")) : "nothing"}</b>` +
+    (a.quiet.enabled ? ` · quiet <b>${esc(a.quiet.start)}–${esc(a.quiet.end)}</b>` +
+      (a.quiet.critical_too ? " (everything held)" : " (critical still comes through)") : "");
+}
+
+/* ---------- right now: attention ---------- */
+function renderStatusStrip() {
+  const w = CFG.notify.webhook, n = CFG.notify.ntfy;
+  const mode = HEAL ? MODE_LABEL[HEAL.mode] || HEAL.mode : "…";
+  $("statusLine").innerHTML =
+    `<b>Notifications:</b> ${(w.enabled || n.enabled) ? [w.enabled ? "webhook ✓" : null, n.enabled ? "ntfy ✓" : null].filter(Boolean).join(" · ") : "<b style='color:var(--bad)'>off</b>"}` +
+    ` &nbsp;·&nbsp; <b>Healing:</b> ${esc(mode)}` +
+    ` &nbsp;·&nbsp; <b>Silenced:</b> ${MUTES.length} item${MUTES.length === 1 ? "" : "s"}`;
+}
+function targetLabel(t) {
+  if (!STATE) return t;
+  const [kind, id] = t.split(/:(.+)/);
+  if (kind === "node") { const n = STATE.nodes.find((x) => x.name === id); return n ? `Node ${n.name} (everything on it)` : t; }
+  if (kind === "guest") { const g = STATE.guests.find((x) => String(x.vmid) === id); return g ? `${g.name} (guest #${g.vmid})` : t; }
+  if (kind === "check") { const p = STATE.probes.find((x) => x.id === id); return p ? `${p.name}${p.guest ? " on " + p.guest : ""}` : t; }
+  return t;
+}
 async function loadState() {
   try { STATE = await (await fetch("/api/state")).json(); } catch { return; }
   const a = STATE.attention || [];
-  $("attention").innerHTML = a.length ? a.map((x) => `<div class="it"><i class="dot ${esc(x.severity)}"></i><span>${x.muted ? "🔕 " : ""}${esc(x.title)}</span>
-    ${x.kind === "guest_stopped" ? `<button class="link" data-clear="${esc(x.key)}">Clear</button>` : ""}
-    <button class="link" data-mute="${esc(x.key)}">Mute 8 h</button></div>`).join("")
-    : '<span class="muted">Nothing. Everything looks fine.</span>';
-  $("attention").querySelectorAll("[data-clear]").forEach((b) => b.onclick = async () => { await api("POST", `/api/alerts/${encodeURIComponent(b.dataset.clear)}/clear`); loadState(); });
-  $("attention").querySelectorAll("[data-mute]").forEach((b) => b.onclick = async () => { await api("POST", "/api/mutes", { target: b.dataset.mute, minutes: 480 }); loadMutes(); loadState(); });
-  const opts = [["", "Choose…"], ...STATE.nodes.map((n) => [`node:${n.name}`, `Node ${n.name} (everything on it)`]),
-    ...STATE.guests.map((g) => [`guest:${g.vmid}`, `Guest ${g.name} (#${g.vmid})`]),
-    ...STATE.probes.map((p) => [`check:${p.id}`, `Check ${p.name}${p.guest ? " on " + p.guest : ""}`])];
-  const cur = $("m_target").value;
-  $("m_target").innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
-  $("m_target").value = cur;
+  $("attnList").innerHTML = a.length ? a.map((x) => `<div class="banner-attn"><span class="dot ${esc(x.severity)}"></span>
+    <b>${x.muted ? "🔕 " : ""}${esc(x.title)}</b><br>
+    <span style="margin-top:4px;display:inline-block">
+    ${x.kind === "guest_stopped" ? `<button class="link" data-clear="${esc(x.key)}">Clear</button> · ` : ""}
+    <button class="link" data-mute="${esc(x.key)}">Mute 8 h</button></span></div>`).join("")
+    : `<div class="banner-ok"><span class="dot ok"></span> Nothing. Everything looks fine.</div>`;
+  $("attnList").querySelectorAll("[data-clear]").forEach((b) => b.onclick = async () => {
+    await api("POST", `/api/alerts/${encodeURIComponent(b.dataset.clear)}/clear`); loadState();
+  });
+  $("attnList").querySelectorAll("[data-mute]").forEach((b) => b.onclick = async () => {
+    await api("POST", "/api/mutes", { target: b.dataset.mute, minutes: 480 }); loadMutes(); loadState();
+  });
+  renderStatusStrip();
+}
+
+/* ---------- mutes ---------- */
+function muteUntilText(x) {
+  if (x.until_ts) return "until " + new Date(x.until_ts * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  if (x.until_recovered) return "until it recovers";
+  return "until I unmute";
 }
 async function loadMutes() {
   const r = await api("GET", "/api/mutes"); if (!r.ok) return;
-  const m = r.data.mutes;
-  $("mutes").innerHTML = m.length ? m.map((x) => `<div class="it"><span>🔕 ${esc(x.target)}</span>
-    <span class="muted small">${x.until_ts ? "until " + new Date(x.until_ts * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) : x.until_recovered ? "until it recovers" : "until unmuted"}</span>
-    <button class="link" data-unmute="${esc(x.target)}">Unmute</button></div>`).join("") : '<span class="muted">Nothing is muted.</span>';
-  $("mutes").querySelectorAll("[data-unmute]").forEach((b) => b.onclick = async () => { await api("DELETE", `/api/mutes/${encodeURIComponent(b.dataset.unmute)}`); loadMutes(); loadState(); });
+  MUTES = r.data.mutes;
+  $("muteList").innerHTML = MUTES.length ? MUTES.map((x, i) =>
+    `<span class="mutetag">🔕 ${esc(targetLabel(x.target))} · <span class="muted">${esc(muteUntilText(x))}</span><button data-unmute="${i}">Unmute</button></span>`).join("")
+    : '<span class="muted small">Nothing silenced.</span>';
+  $("muteList").querySelectorAll("[data-unmute]").forEach((b) => b.onclick = async () => {
+    await api("DELETE", `/api/mutes/${encodeURIComponent(MUTES[+b.dataset.unmute].target)}`);
+    loadMutes(); loadState();
+  });
+  renderStatusStrip();
 }
-$("m_add").onclick = async () => {
-  const target = $("m_target").value, f = $("m_for").value; if (!target) return;
-  await api("POST", "/api/mutes", { target, minutes: /^\d+$/.test(f) ? Number(f) : null, until_recovered: f === "rec" });
-  loadMutes(); loadState();
+let mutePick = null, muteDur = "60";
+const DUR_LABEL = { 60: "1 hour", 480: "8 hours", 1440: "1 day", 10080: "1 week", rec: "until it recovers", ever: "until I unmute" };
+function muteTargets() {
+  if (!STATE) return [];
+  return [
+    ...STATE.nodes.map((n) => [`node:${n.name}`, `Node ${n.name} (everything on it)`]),
+    ...STATE.guests.map((g) => [`guest:${g.vmid}`, `${g.name} (guest #${g.vmid})`]),
+    ...STATE.probes.map((p) => [`check:${p.id}`, `${p.name}${p.guest ? " on " + p.guest : ""}`]),
+  ];
+}
+$("muteSearch").addEventListener("input", () => {
+  const q = $("muteSearch").value.trim().toLowerCase(), box = $("muteResults");
+  const hits = q ? muteTargets().filter(([, l]) => l.toLowerCase().includes(q)).slice(0, 8) : [];
+  if (!hits.length) { box.style.display = "none"; return; }
+  box.innerHTML = "";
+  for (const [v, l] of hits) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = l;
+    b.onclick = () => { mutePick = v; $("muteSearch").value = l; box.style.display = "none"; renderMuteAdd(); };
+    box.appendChild(b);
+  }
+  box.style.display = "block";
+});
+document.addEventListener("click", (e) => { if (!e.target.closest(".searchbox")) $("muteResults").style.display = "none"; });
+document.querySelectorAll("#durChips .chip").forEach((c) => c.onclick = () => {
+  document.querySelectorAll("#durChips .chip").forEach((x) => x.setAttribute("aria-pressed", "false"));
+  c.setAttribute("aria-pressed", "true"); muteDur = c.dataset.dur;
+});
+function renderMuteAdd() {
+  $("muteAdd").disabled = !mutePick;
+  $("mutePickLabel").textContent = mutePick ? `Muting: ${targetLabel(mutePick)}` : "Pick something above first";
+}
+$("muteAdd").onclick = async () => {
+  if (!mutePick) return;
+  await api("POST", "/api/mutes", { target: mutePick, minutes: /^\d+$/.test(muteDur) ? Number(muteDur) : null, until_recovered: muteDur === "rec" });
+  mutePick = null; $("muteSearch").value = ""; renderMuteAdd(); loadMutes(); loadState(); toast("Muted ✓");
 };
+
+/* ---------- deliveries + activity ---------- */
 async function loadDeliveries() {
   const r = await api("GET", "/api/deliveries"); if (!r.ok) return;
-  const d = r.data.deliveries;
-  $("deliveries").innerHTML = d.length ? d.slice(0, 15).map((x) => `<div class="it"><i class="dot ${x.ok ? "ok" : "critical"}"></i>
+  DELIVERIES = r.data.deliveries;
+  $("notifLog").innerHTML = DELIVERIES.length ? DELIVERIES.slice(0, 8).map((x) => `<div class="it"><i class="dot ${x.ok ? "ok" : "critical"}"></i>
     <span>${esc(x.title)}<div class="muted small">${esc(x.channel)} · ${x.ok ? "delivered" : esc(x.error || x.status)}</div></span>
-    <span class="faint small">${ago(x.ts)}</span></div>`).join("") : '<span class="muted">None yet.</span>';
+    <span class="faint small" style="margin-left:auto;white-space:nowrap">${ago(x.ts)}</span></div>`).join("")
+    : '<span class="muted">None yet.</span>';
+  renderNotifState(); renderActivity();
+}
+let actFilter = "all";
+document.querySelectorAll("#actFilter .chip").forEach((c) => c.onclick = () => {
+  document.querySelectorAll("#actFilter .chip").forEach((x) => x.setAttribute("aria-pressed", "false"));
+  c.setAttribute("aria-pressed", "true"); actFilter = c.dataset.f; renderActivity();
+});
+function renderActivity() {
+  const items = [
+    ...DELIVERIES.map((x) => ({ kind: "notif", ts: x.ts, dot: x.ok ? "ok" : "critical",
+      title: x.title, sub: `${x.channel} · ${x.ok ? "delivered" : (x.error || x.status)}` })),
+    ...((HEAL && HEAL.history) || []).map((h) => ({ kind: "fix", ts: h.ts,
+      dot: h.recovered ? "ok" : (h.ok === false || h.recovered === false) ? "critical" : "warning",
+      title: h.detail, sub: `${h.check_id} · ${h.recipe_id} · ${String(h.mode).replace("_", " ")}` })),
+  ].sort((a, b) => b.ts - a.ts).slice(0, 20);
+  const shown = items.filter((i) => actFilter === "all" || i.kind === actFilter);
+  $("actLog").innerHTML = shown.length ? shown.map((i) => `<div class="it"><i class="dot ${i.dot}"></i>
+    <span>${esc(i.title)}<div class="muted small">${esc(i.sub)}</div></span>
+    <span class="faint small" style="margin-left:auto;white-space:nowrap">${ago(i.ts)}</span></div>`).join("")
+    : '<span class="muted">Nothing yet.</span>';
 }
 
-$("pwForm").onsubmit = async (e) => {
-  e.preventDefault();
-  const r = await api("POST", "/api/password", { current: $("pw_cur").value, new: $("pw_new").value });
-  if (r.ok) { msg("pwMsg", "Changed. Sign in with the new password.", true); setTimeout(showLogin, 1200); }
-  else msg("pwMsg", r.data.error || "Not changed", false);
-};
-
 /* ---------- self-healing ---------- */
-let HEAL = null;
-const SRC = { "built-in": "built-in", "local": "yours", "local override": "yours (overrides built-in)" };
 function argvText(r) {
   const d = r.do || {};
   if (d.restart === "unit") return "systemctl restart <the service that owns the check's port>";
   if (d.restart === "container") return "docker restart <the container that publishes the check's port>";
   return (d.exec || []).map((a) => a.map((x) => /\s/.test(x) ? JSON.stringify(x) : x).join(" ")).join("\n");
 }
+async function saveHeal() {
+  const recs = {};
+  document.querySelectorAll("[data-rmode]").forEach((s) => { if (s.value !== "default") recs[s.dataset.rmode] = s.value; });
+  const r = await api("PUT", "/api/heal/settings", { mode: HEAL.mode, recipes: recs });
+  if (r.ok) { toast("Saved ✓"); loadHeal(); }
+  else toast(`Not saved: ${r.data.error || r.status}`, true);
+}
+document.querySelectorAll("#healModes .mode").forEach((el) => {
+  const pick = () => {
+    if (el.classList.contains("disabled")) return;
+    HEAL.mode = el.dataset.mode; saveHeal();
+  };
+  el.onclick = pick;
+  el.onkeydown = (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); pick(); } };
+});
 async function loadHeal() {
   const r = await api("GET", "/api/heal"); if (!r.ok) return;
   HEAL = r.data;
   const g = HEAL.gate;
-  $("gateStatus").innerHTML = g.ok
-    ? `<span class="badge ok">gate connected</span> <span class="muted">version ${esc(g.version)} · ${g.enabled ? "enabled on the host" : "<b style='color:var(--warn)'>switched off on the host</b> (/etc/pulse-heal/enabled)"} · budget ${esc(g.budget_per_hour)} fixes/hour</span>`
-    : `<span class="badge err">no gate</span> <span class="muted">${esc(g.error || "")}</span>`;
-  document.querySelectorAll('input[name="hmode"]').forEach((i) => { i.checked = i.value === HEAL.mode; i.disabled = !g.ok && i.value !== "off"; });
-  $("healAsks").innerHTML = HEAL.asks.length ? `<h3>Waiting for your OK</h3><div class="list">${HEAL.asks.map((a) =>
-    `<div class="it"><i class="dot warning"></i><span>${esc(a.check_id)} · ${esc(a.recipe)}</span><button data-ask="${esc(a.check_id)}" data-recipe="${esc(a.recipe_id)}">Run fix</button></div>`).join("")}</div>` : "";
-  $("healAsks").querySelectorAll("[data-ask]").forEach((b) => b.onclick = async () => {
-    b.disabled = true; const r = await api("POST", "/api/heal/run", { recipe_id: b.dataset.recipe, check_id: b.dataset.ask });
-    b.textContent = r.ok && r.data.ok ? "Done ✓" : `Failed: ${r.data.error || r.status}`; loadHeal();
+  document.querySelectorAll("#healModes .mode").forEach((el) => {
+    const m = el.dataset.mode;
+    el.setAttribute("aria-checked", m === HEAL.mode ? "true" : "false");
+    el.classList.toggle("disabled", !g.ok && m !== "off");
   });
-  $("healRecipes").className = "";
+  $("autoNote").hidden = HEAL.mode !== "auto";
+  $("dryNote").hidden = HEAL.mode !== "dry_run";
+  $("healState").innerHTML = `<b>Mode:</b> ${esc(MODE_LABEL[HEAL.mode] || HEAL.mode)}` +
+    (HEAL.mode === "dry_run" ? " — fixes are only logged, nothing restarts" :
+     HEAL.mode === "auto" ? " — up to 10 fixes/hour before alerting you" :
+     HEAL.mode === "ask" ? " — you approve each fix" : "") +
+    (g.ok ? "" : ` · <b style="color:var(--bad)">gate unreachable</b>`);
+  $("gateLine").innerHTML = g.ok
+    ? `<dt>Status</dt><dd><span class="dot ok"></span> connected (version ${esc(g.version)})</dd>
+       <dt>On the host</dt><dd>${g.enabled ? "enabled" : "<b style='color:var(--warn)'>switched off</b> (<code>/etc/pulse-heal/enabled</code>)"}</dd>
+       <dt>Budget</dt><dd>${esc(g.budget_per_hour)} fixes/hour</dd>`
+    : `<dt>Status</dt><dd><span class="dot critical"></span> ${esc(g.error || "unreachable")}</dd>`;
+  $("healAsks").innerHTML = HEAL.asks.length ? `<h3 class="sub">Waiting for your OK</h3><div class="list">${HEAL.asks.map((a) =>
+    `<div class="it"><i class="dot warning"></i><span>${esc(a.check_id)} · ${esc(a.recipe)}</span>
+     <button data-ask="${esc(a.check_id)}" data-recipe="${esc(a.recipe_id)}">Run fix</button></div>`).join("")}</div>` : "";
+  $("healAsks").querySelectorAll("[data-ask]").forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    const rr = await api("POST", "/api/heal/run", { recipe_id: b.dataset.recipe, check_id: b.dataset.ask });
+    toast(rr.ok && rr.data.ok ? "Fix ran ✓" : `Failed: ${rr.data.error || rr.status}`, !(rr.ok && rr.data.ok));
+    loadHeal();
+  });
   $("healRecipes").innerHTML = HEAL.recipes.length ? HEAL.recipes.map((x) => `<div class="recipe">
-    <div class="head"><b>${esc(x.name)}</b><span class="badge">${esc(SRC[x.source] || x.source)}</span>
-      ${x.errors && x.errors.length ? `<span class="badge err">can't run</span>` : `<span class="badge">${x.matches.length} check${x.matches.length === 1 ? "" : "s"}</span>`}
-      <select data-rmode="${esc(x.id)}" ${x.errors && x.errors.length ? "disabled" : ""}>${["default", "auto", "ask", "off"].map((m) =>
+    <div class="head"><div class="grow"><b>${esc(x.name)}</b>
+      <span class="badge">${esc(SRC_LABEL[x.source] || x.source)}</span>
+      ${x.errors && x.errors.length ? `<span class="badge err">can't run</span>` : `<span class="badge">${x.matches.length} check${x.matches.length === 1 ? "" : "s"}</span>`}</div>
+      <select data-rmode="${esc(x.id)}" ${x.errors && x.errors.length ? "disabled" : ""} aria-label="${esc(x.name)} behavior">${["default", "auto", "ask", "off"].map((m) =>
         `<option value="${m}" ${x.mode === m ? "selected" : ""}>${m === "default" ? `default (${esc((x.safety || {}).default_mode || "auto")})` : m}</option>`).join("")}</select></div>
     ${x.errors && x.errors.length ? `<div class="small" style="color:var(--bad)">${x.errors.map(esc).join("<br>")}</div>` : ""}
-    <details><summary>Details${x.matches.length ? " · test" : ""}</summary>
-      <div class="muted small">${esc(x.description || "")}</div>
+    <details><summary>What exactly runs${x.matches.length ? " · test it" : ""}</summary>
+      <div class="muted small" style="margin-top:6px">${esc(x.description || "")}</div>
       <pre>${esc(argvText(x))}</pre>
       <div class="muted small">When: ${esc(JSON.stringify(x.when || {}))} · max ${esc((x.safety || {}).max_per_hour)}/hour · waits ${esc((x.safety || {}).verify_s)} s for recovery</div>
-      ${x.matches.length ? `<div class="row" style="margin-top:6px"><label><span>Test on (dry run)</span><select data-tcheck="${esc(x.id)}">${x.matches.map((m) => `<option>${esc(m)}</option>`).join("")}</select></label>
-        <button data-test-recipe="${esc(x.id)}" style="flex:0 0 auto">Test</button></div><pre data-tout="${esc(x.id)}" hidden></pre>` : ""}
+      ${x.matches.length ? `<div class="ovr-edit"><label class="muted small">Test on (dry run)</label>
+        <select data-tcheck="${esc(x.id)}" style="flex:1;min-width:160px">${x.matches.map((m) => `<option>${esc(m)}</option>`).join("")}</select>
+        <button data-test-recipe="${esc(x.id)}">Test</button></div><pre data-tout="${esc(x.id)}" hidden></pre>` : ""}
     </details></div>`).join("") : '<span class="muted">No recipes available.</span>';
+  $("healRecipes").querySelectorAll("[data-rmode]").forEach((s) => s.addEventListener("change", saveHeal));
   $("healRecipes").querySelectorAll("[data-test-recipe]").forEach((b) => b.onclick = async () => {
-    const id = b.dataset.testRecipe, check = document.querySelector(`[data-tcheck="${id}"]`).value, out = document.querySelector(`[data-tout="${id}"]`);
-    const r = await api("POST", "/api/heal/test", { recipe_id: id, check_id: check });
+    const id = b.dataset.testRecipe, check = document.querySelector(`[data-tcheck="${id}"]`).value,
+      out = document.querySelector(`[data-tout="${id}"]`);
+    const rr = await api("POST", "/api/heal/test", { recipe_id: id, check_id: check });
     out.hidden = false;
-    out.textContent = r.data.ok ? "Would run:\n" + r.data.steps.map((s) => s.argv.join(" ")).join("\n") : `Refused: ${r.data.error || r.status}`;
+    out.textContent = rr.data.ok ? "Would run:\n" + rr.data.steps.map((s) => s.argv.join(" ")).join("\n") : `Refused: ${rr.data.error || rr.status}`;
   });
   $("healTargets").innerHTML = HEAL.targets.length ? HEAL.targets.map((t) => {
     const ov = t.override || {}, learned = t.container ? `container ${t.container}` : t.unit || "nothing learned yet";
-    return `<div class="it"><span>${esc(t.name)}${t.guest ? " on " + esc(t.guest) : ""} <span class="faint">${esc(t.check_id)}</span>
-      <div class="muted small">${ov.skip ? "healing off for this check" : ov.unit ? "override: " + esc(ov.unit) : ov.container ? "override: container " + esc(ov.container) : "learned: " + esc(learned)}</div></span>
-      <button class="link" data-ovr="${esc(t.check_id)}">Change</button></div>`;
+    const desc = ov.skip ? "healing off for this check" : ov.unit ? "override: " + ov.unit : ov.container ? "override: container " + ov.container : "learned: " + learned;
+    return `<div class="it"><span><b>${esc(t.name)}</b>${t.guest ? " on " + esc(t.guest) : ""}
+      <div class="muted small">${esc(desc)}</div></span>
+      <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
+        <span class="faint small">${esc(t.check_id)}</span><button class="link" data-ovr="${esc(t.check_id)}">Change</button></span>
+      <div class="ovr-edit" data-ovredit="${esc(t.check_id)}" hidden style="flex-basis:100%">
+        <input type="text" placeholder="myapp.service · container:name · off · empty = back to auto" aria-label="Healing target override">
+        <button data-ovrsave="${esc(t.check_id)}">Save</button><button class="ghost" data-ovrcancel="${esc(t.check_id)}">Cancel</button>
+      </div></div>`;
   }).join("") : '<span class="muted">No checks yet.</span>';
-  $("healTargets").querySelectorAll("[data-ovr]").forEach((b) => b.onclick = async () => {
-    const v = prompt("Service (e.g. myapp.service), container:<name>, 'off' to never heal this check, or empty to go back to the learned value", "");
-    if (v === null) return;
-    const body = v.trim() === "" ? null : v.trim() === "off" ? { skip: true } : v.startsWith("container:") ? { container: v.slice(10).trim() } : { unit: v.trim() };
-    const r = await api("PUT", `/api/heal/override/${encodeURIComponent(b.dataset.ovr)}`, body);
-    if (!r.ok) alert(r.data.error || "Not saved"); loadHeal();
+  $("healTargets").querySelectorAll("[data-ovr]").forEach((b) => b.onclick = () => {
+    const ed = document.querySelector(`[data-ovredit="${b.dataset.ovr}"]`); ed.hidden = !ed.hidden;
+    if (!ed.hidden) ed.querySelector("input").focus();
   });
-  $("healHistory").innerHTML = HEAL.history.length ? HEAL.history.slice(0, 20).map((h) => `<div class="it">
-    <i class="dot ${h.recovered ? "ok" : h.ok === false || h.recovered === false ? "critical" : ""}"></i>
-    <span>${esc(h.detail)}<div class="muted small">${esc(h.check_id)} · ${esc(h.recipe_id)} · ${esc(h.mode.replace("_", " "))}</div></span>
-    <span class="faint small">${ago(h.ts)}</span></div>`).join("") : '<span class="muted">None yet.</span>';
+  $("healTargets").querySelectorAll("[data-ovrcancel]").forEach((b) => b.onclick = () => {
+    document.querySelector(`[data-ovredit="${b.dataset.ovrcancel}"]`).hidden = true;
+  });
+  $("healTargets").querySelectorAll("[data-ovrsave]").forEach((b) => b.onclick = async () => {
+    const id = b.dataset.ovrsave, ed = document.querySelector(`[data-ovredit="${id}"]`), v = ed.querySelector("input").value.trim();
+    const body = v === "" ? null : v === "off" ? { skip: true } : v.startsWith("container:") ? { container: v.slice(10).trim() } : { unit: v };
+    const rr = await api("PUT", `/api/heal/override/${encodeURIComponent(id)}`, body);
+    if (!rr.ok) toast(rr.data.error || "Not saved", true); else { toast("Saved ✓"); loadHeal(); }
+  });
+  renderStatusStrip(); renderActivity();
 }
-$("healSave").onclick = async () => {
-  const mode = (document.querySelector('input[name="hmode"]:checked') || {}).value || "off";
-  const recs = {};
-  document.querySelectorAll("[data-rmode]").forEach((s) => { if (s.value !== "default") recs[s.dataset.rmode] = s.value; });
-  const r = await api("PUT", "/api/heal/settings", { mode, recipes: recs });
-  msg("healMsg", r.ok ? "Saved." : `Not saved: ${r.data.error || r.status}`, r.ok);
-  if (r.ok) loadHeal();
+
+/* ---------- password ---------- */
+$("pwForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await api("POST", "/api/password", { current: $("pw_cur").value, new: $("pw_new").value });
+  if (r.ok) { toast("Changed. Sign in with the new password."); setTimeout(showLogin, 1200); }
+  else toast(r.data.error || "Not changed", true);
 };
 
 /* ---------- start ---------- */
@@ -431,6 +775,7 @@ async function start() {
   const r = await api("GET", "/api/settings"); if (!r.ok) return;
   $("login").hidden = true; $("app").hidden = false; $("signout").hidden = false;
   fill(r.data.settings); loadState(); loadMutes(); loadDeliveries(); loadHeal();
+  renderMuteAdd();
 }
 start();
 setInterval(() => { if (!$("app").hidden) { loadState(); loadDeliveries(); loadHeal(); } }, 30000);

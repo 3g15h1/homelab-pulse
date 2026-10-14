@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 — 2026-10-14
+
+- **Settings page redesigned:** a "Right now" status strip; Notifications with per-channel health, last-delivery
+  info and test buttons; "When Pulse speaks up" in plain language (kinds, timing, quiet hours); Early warnings
+  with tunable rules; Silenced with search-based muting and mute-from-attention; Self-healing with mode cards,
+  pending-fix approvals, recipes and inline target overrides; a merged Activity log; collapsed Advanced section.
+  Changes auto-save with a "Saved" confirmation instead of per-section save buttons.
+
 ## 1.2.0 — 2026-10-14
 
 - **Self-healing (opt-in):** first-response fixes run through a narrow, audited gate on the Proxmox host
