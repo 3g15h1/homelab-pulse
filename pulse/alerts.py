@@ -176,6 +176,8 @@ class AlertEngine:
             self._event(st, key, "resolve", now)
             if st["sent"] and cfg["send_recovery"] and not self._muted(key, st, mutes):
                 items.append(self._item(st, key, "resolve", now))
+        # net_down from all firing states (not just this batch's present conditions): equivalent in
+        # practice -- recovery deletes the state before this runs, and pending states aren't included.
         firing_kinds = {st.get("kind") for key, st in self.states.items()
                         if not key.startswith("_") and st.get("state") == "firing"}
         return self._deliver(items, now, cfg, lab, net_down="net_down" in firing_kinds)
@@ -213,7 +215,8 @@ class AlertEngine:
             lines = [f"• {it['title']}" + (" (resolved)" if it.get("resolved") or it["state"] == "resolve" else "")
                      for it in held]
             out.append(Notification(f"While you were away: {n} alert{'s' if n != 1 else ''}", self._lines(lines),
-                                    max((it["severity"] for it in held), key=RANK.get), "summary", held, now))
+                                    max((it["severity"] for it in held), key=RANK.get), "summary", held, now,
+                                    net_down=net_down))
         return out
 
     @staticmethod

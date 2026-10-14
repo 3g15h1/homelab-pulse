@@ -520,10 +520,10 @@ class Collector:
                 except Exception as e:  # noqa: BLE001
                     if "403" in str(e) or "401" in str(e):
                         self._updates_unsupported = True
+                        self.node_updates = {}
                         log.warning("PVE updates need Sys.Modify; not retrying")
-                    else:
-                        log.warning("node %s updates: %s", node, e)
-                    break
+                        break
+                    log.warning("node %s updates: %s", node, e)
         for node in online:
             try:
                 disks[node] = build_disks(self.pve.disks(node))
@@ -633,7 +633,9 @@ class Collector:
         if self.storage_hist_at is None or now - self.storage_hist_at >= self.STORAGE_HIST_EVERY:
             self._refresh_storage_history(snap)
             self.storage_hist_at = now
-        conds = build_conditions(snap, dict(self.stopped), self.tasks_raw, now, self.flap_hist)
+        with self.cond:
+            flap = {v: deque(t) for v, t in self.flap_hist.items()}
+        conds = build_conditions(snap, dict(self.stopped), self.tasks_raw, now, flap)
         conds += early.evaluate(snap, self.storage_hist, cfg["warnings"], self.early_state, now)
         with self.cond:
             if self.pending_conds:

@@ -392,3 +392,16 @@ class SuppressionTests(unittest.TestCase):
         notes = eng.process(conds, 1000.0, self._cfg(), [], "lab")
         titles = self._titles(notes)
         self.assertTrue(any("Internet is unreachable" in t for t in titles))
+
+
+class QuietNetDownTests(unittest.TestCase):
+    def test_quiet_flush_marks_net_down(self):
+        h = QuietTests().quiet()
+        h.run([warn("pve1/local-lvm")], 1800)
+        self.assertEqual(h.sent, [])
+        net = {"key": "net:internet", "kind": "net_down", "severity": "critical",
+               "title": "Internet is unreachable", "target": "internet", "node": None}
+        h.run([warn("pve1/local-lvm"), net], 1800 + 15)
+        summaries = [n for n in h.sent if n.state == "summary"]
+        self.assertEqual(len(summaries), 1)
+        self.assertTrue(summaries[0].net_down)

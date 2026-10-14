@@ -466,3 +466,50 @@ class DiscoveryDiffTests(unittest.TestCase):
         import settings
         for k in ("service_appeared", "ip_changed"):
             self.assertTrue(settings.DEFAULTS["alerts"]["kinds"][k], k)
+
+
+class FlapSnapshotTests(unittest.TestCase):
+    def test_poll_alerts_snapshots_flap_hist(self):
+        from collections import deque
+        c, clock = make()
+        c.flap_hist[101] = deque([clock() - 100, clock() - 200])
+        captured = {}
+        def spy(snap, stopped, tasks, now, flap_hist=None):
+            captured["flap"] = flap_hist
+            return []
+        with mock.patch.object(collect, "build_conditions", spy):
+            c.poll_alerts()
+        snap = captured["flap"]
+        self.assertIsNot(snap, c.flap_hist, "must not pass the live flap_hist dict")
+        self.assertIsNot(snap[101], c.flap_hist[101], "deques must be copies, not shared")
+        self.assertEqual(list(snap[101]), list(c.flap_hist[101]))
+
+
+class UpdateLoopTests(unittest.TestCase):
+    def _two_nodes(self, c):
+        c.nodes = [{"name": "n1", "online": True}, {"name": "n2", "online": True}]
+
+    def test_transient_error_continues_to_next_node(self):
+        c, clock = make()
+        self._two_nodes(c)
+        calls = []
+        def fake_updates(node):
+            calls.append(node)
+            if node == "n1":
+                raise OSError("timeout")
+            return [{"Package": "p", "Version": "2", "OldVersion": "1", "Origin": ""}]
+        c.pve.node_updates = fake_updates
+        c.poll_slow()
+        self.assertEqual(calls, ["n1", "n2"])
+        self.assertIn("n2", c.node_updates)
+        self.assertNotIn("n1", c.node_updates)
+        self.assertFalse(c._updates_unsupported)
+
+    def test_403_clears_stale_updates_and_stops(self):
+        c, clock = make()
+        self._two_nodes(c)
+        c.node_updates = {"n1": [{"package": "old"}]}
+        c.pve.node_updates = lambda node: (_ for _ in ()).throw(Exception("403 Forbidden"))
+        c.poll_slow()
+        self.assertTrue(c._updates_unsupported)
+        self.assertEqual(c.node_updates, {})
