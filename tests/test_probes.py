@@ -1,9 +1,11 @@
 """Unverified TLS / HTTPS probes used for discovered services (self-signed certs are normal there)."""
 import calendar
+import socket
 import ssl
 import threading
 import time
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -88,6 +90,74 @@ class InsecureProbeTests(unittest.TestCase):
         with TlsServer("selfsigned") as s:
             self.assertTrue(probes.run({"kind": "tls", "host": "127.0.0.1", "port": s.port, "verify": False}).ok)
             self.assertTrue(probes.run({"kind": "http", "url": f"https://127.0.0.1:{s.port}/", "insecure": True}).ok)
+
+
+
+
+class PingProbeTests(unittest.TestCase):
+    def test_ping_localhost_ok(self):
+        r = probes.probe_ping("127.0.0.1")
+        self.assertTrue(r.ok, r.detail)
+        self.assertIsNotNone(r.latency_ms)
+
+    def test_ping_unroutable_fails(self):
+        r = probes.probe_ping("192.0.2.1", timeout=1.0)  # TEST-NET-1, unroutable
+        self.assertFalse(r.ok)
+        self.assertTrue(r.detail)
+
+    def test_ping_missing_binary_fails_cleanly(self):
+        with unittest.mock.patch("probes.subprocess.run", side_effect=FileNotFoundError("ping")):
+            r = probes.probe_ping("127.0.0.1")
+        self.assertFalse(r.ok)
+        self.assertIn("ping", r.detail)
+
+    def test_run_dispatches_ping(self):
+        r = probes.run({"kind": "ping", "host": "127.0.0.1"})
+        self.assertTrue(r.ok, r.detail)
+
+
+def _canned_dns_reply(qname, ip, qid=0x1234):
+    import struct
+    _, query = probes.build_query(qname, qid=qid)
+    question = query[12:]
+    header = struct.pack(">HHHHHH", qid, 0x8180, 1, 1, 0, 0)
+    answer = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + socket.inet_aton(ip)
+    return header + question + answer
+
+
+def _fixed_qid():
+    real = probes.build_query
+    return unittest.mock.patch("probes.build_query",
+                               lambda qname, qid=0x1234, qtype=1: real(qname, qid=qid, qtype=qtype))
+
+
+class ResolveProbeTests(unittest.TestCase):
+    def _mock_socket(self, reply):
+        ms = unittest.mock.MagicMock()
+        ms.__enter__.return_value.recvfrom.return_value = (reply, ("127.0.0.1", 53))
+        return unittest.mock.patch("socket.socket", return_value=ms)
+
+    def test_resolve_answers(self):
+        reply = _canned_dns_reply("example.com", "93.184.216.34")
+        with _fixed_qid(), self._mock_socket(reply):
+            r = probes.probe_resolve("127.0.0.1", "example.com")
+        self.assertTrue(r.ok, r.detail)
+        self.assertIn("93.184.216.34", r.detail)
+
+    def test_resolve_garbage_reply_fails(self):
+        with self._mock_socket(b"\x00\x01garbage"):
+            r = probes.probe_resolve("127.0.0.1", "example.com")
+        self.assertFalse(r.ok)
+
+    def test_resolve_no_server_fails(self):
+        r = probes.probe_resolve("127.0.0.1", "example.com", timeout=1.0)  # nothing on :53
+        self.assertFalse(r.ok)
+
+    def test_run_dispatches_resolve(self):
+        reply = _canned_dns_reply("example.com", "93.184.216.34")
+        with _fixed_qid(), self._mock_socket(reply):
+            r = probes.run({"kind": "resolve", "server": "127.0.0.1", "qname": "example.com"})
+        self.assertTrue(r.ok, r.detail)
 
 
 if __name__ == "__main__":

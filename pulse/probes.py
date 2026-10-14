@@ -8,6 +8,7 @@ import os
 import socket
 import ssl
 import struct
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -218,6 +219,38 @@ def probe_dns(server, qname, timeout=3.0, port=53):
     return Result(True, latency, "blocking ads" if blocked else "answering (not blocking)")
 
 
+def probe_ping(host, timeout=2.0):
+    """One ICMP echo via the system ping binary (no raw sockets needed)."""
+    t0 = time.perf_counter()
+    try:
+        cp = subprocess.run(["ping", "-c1", "-W%d" % max(1, round(timeout)), host],
+                            capture_output=True, timeout=timeout + 5)
+    except FileNotFoundError:
+        return Result(False, None, "ping binary not found")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return Result(False, None, _short(e))
+    if cp.returncode == 0:
+        return Result(True, _ms(t0), "ping ok")
+    return Result(False, None, "no reply")
+
+
+def probe_resolve(server, qname="example.com", timeout=3.0):
+    """Ask `server` for a real A record. Up = it resolves (unlike probe_dns, no ad-block semantics)."""
+    qid, packet = build_query(qname)
+    t0 = time.perf_counter()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(timeout)
+            s.sendto(packet, (server, 53))
+            msg, _ = s.recvfrom(1500)
+        rcode, ips = parse_response(msg, qid)
+    except (OSError, ValueError) as e:
+        return Result(False, None, _short(e))
+    if rcode != 0 or not ips:
+        return Result(False, None, "no answer" if rcode == 0 else f"DNS rcode {rcode}")
+    return Result(True, _ms(t0), f"resolved to {ips[0]}")
+
+
 def run(spec):
     kind = spec["kind"]
     if kind == "tcp":
@@ -229,6 +262,10 @@ def run(spec):
                          verify=spec.get("verify", True))
     if kind == "dns":
         return probe_dns(spec["server"], spec["qname"])
+    if kind == "ping":
+        return probe_ping(spec["host"], spec.get("timeout", 2.0))
+    if kind == "resolve":
+        return probe_resolve(spec["server"], spec.get("qname", "example.com"), spec.get("timeout", 3.0))
     raise ValueError(f"unknown probe kind {kind!r}")
 
 
