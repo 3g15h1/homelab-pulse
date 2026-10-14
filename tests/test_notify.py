@@ -2,6 +2,7 @@ import json
 import ssl
 import threading
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -179,3 +180,37 @@ class ActionTests(unittest.TestCase):
         self.n.send_now(self.noted(), cfg(ntfy={"enabled": True, "server": c.url, "topic": "t"}))
         self.assertEqual(c.requests[0]["headers"]["Actions"],
                          "http, Run fix, http://pulse.local/api/heal/run/tok, method=POST, clear=true")
+
+
+class NetDownSkipTests(unittest.TestCase):
+    def test_ntfy_skipped_when_net_down(self):
+        cap = Capture()
+        self.addCleanup(cap.close)
+        n = Notification("t", "m", "critical", "fire", [], 1_800_000_000.0, net_down=True)
+        nb = notify.Notifier(store.Store(":memory:"), "/")
+        c = cfg(webhook={"enabled": True, "url": cap.url},
+                ntfy={"enabled": True, "server": "https://ntfy.example", "topic": "t"})
+        res = nb.send_now(n, c)
+        by_channel = {r["channel"]: r for r in res}
+        self.assertEqual(by_channel["ntfy"]["status"], "skipped")
+        self.assertIn("internet", by_channel["ntfy"]["error"])
+        self.assertTrue(by_channel["webhook"]["ok"])
+        self.assertEqual(len(cap.requests), 1)  # only the webhook went out
+
+    def test_ntfy_sent_when_net_ok(self):
+        n = Notification("t", "m", "critical", "fire", [], 1_800_000_000.0, net_down=False)
+        nb = notify.Notifier(store.Store(":memory:"), "/")
+        c = cfg(ntfy={"enabled": True, "server": "https://ntfy.example", "topic": "t"})
+        with unittest.mock.patch.object(notify.Notifier, "_post",
+                                        return_value=(True, "200", None)) as mp:
+            res = nb.send_now(n, c)
+        self.assertTrue(mp.called)
+        self.assertTrue(all(r["channel"] != "ntfy" or r["status"] != "skipped" for r in res))
+
+    def test_skip_result_when_only_ntfy_enabled(self):
+        n = Notification("t", "m", "critical", "fire", [], 1_800_000_000.0, net_down=True)
+        nb = notify.Notifier(store.Store(":memory:"), "/")
+        c = cfg(ntfy={"enabled": True, "server": "https://ntfy.example", "topic": "t"})
+        res = nb.send_now(n, c)
+        self.assertEqual([(r["channel"], r["status"]) for r in res], [("ntfy", "skipped")])
+

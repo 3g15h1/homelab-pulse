@@ -23,6 +23,7 @@ class Notification:
     state: str                     # fire | resolve | repeat | update | summary | test
     items: list = field(default_factory=list)
     ts: float = 0.0
+    net_down: bool = False         # internet is down: ntfy can't deliver, skip it
 
 
 def _minutes(hhmm):
@@ -167,11 +168,13 @@ class AlertEngine:
             self._event(st, key, "resolve", now)
             if st["sent"] and cfg["send_recovery"] and not self._muted(key, st, mutes):
                 items.append(self._item(st, key, "resolve", now))
-        return self._deliver(items, now, cfg, lab)
+        firing_kinds = {st.get("kind") for key, st in self.states.items()
+                        if not key.startswith("_") and st.get("state") == "firing"}
+        return self._deliver(items, now, cfg, lab, net_down="net_down" in firing_kinds)
 
     # -- grouping and quiet hours --
 
-    def _deliver(self, items, now, cfg, lab):
+    def _deliver(self, items, now, cfg, lab, net_down=False):
         box = self.states["_outbox"]
         if items:
             if box["opened"] is None:
@@ -195,7 +198,7 @@ class AlertEngine:
                 else:
                     self.states["_quiet"].append(it)
             if send:
-                out.append(self._build(send, now, lab))
+                out.append(self._build(send, now, lab, net_down=net_down))
         if self.states["_quiet"] and not in_quiet(cfg["quiet"], now):
             held, self.states["_quiet"] = self.states["_quiet"], []
             n = len(held)
@@ -210,7 +213,7 @@ class AlertEngine:
         extra = len(lines) - MAX_LINES
         return "\n".join(lines[:MAX_LINES] + ([f"…and {extra} more"] if extra > 0 else []))
 
-    def _build(self, items, now, lab):
+    def _build(self, items, now, lab, net_down=False):
         states = {it["state"] for it in items}
         severity = max((it["severity"] for it in items), key=RANK.get)
 
@@ -222,10 +225,11 @@ class AlertEngine:
                 return it["title"]
             return f"Still: {it['title']}" if it["state"] == "repeat" else it["title"]
 
+        suffix = " (internet is down \u2014 ntfy skipped)" if net_down else ""
         if len(items) == 1:
             it = items[0]
-            message = line(it) + (f"\n{it['note']}" if it.get("note") and it["state"] == "fire" else "")
-            return Notification(line(it), message, severity, it["state"], items, now)
+            message = line(it) + (f"\n{it['note']}" if it.get("note") and it["state"] == "fire" else "") + suffix
+            return Notification(line(it), message, severity, it["state"], items, now, net_down=net_down)
         state = states.pop() if len(states) == 1 else "update"
         nodes = {it.get("node") for it in items}
         all_down = all(it["kind"] == "service_down" for it in items) and len(nodes) == 1 and None not in nodes
@@ -239,4 +243,5 @@ class AlertEngine:
         else:
             title = f"{n} problems on {lab}"
         return Notification(title, self._lines([f"• {line(it)}" + (f" ({it['note']})" if it.get("note") and it["state"] == "fire" else "")
-                                                for it in items]), severity, state, items, now)
+                                                for it in items]) + suffix, severity, state, items, now,
+                                net_down=net_down)

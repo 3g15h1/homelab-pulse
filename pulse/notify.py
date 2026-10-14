@@ -90,6 +90,13 @@ class Notifier:
             c = cfg_notify[name]
             if (channel and channel != name) or (not channel and not c.get("enabled")):
                 continue
+            if n.net_down and name == "ntfy":
+                res = {"channel": name, "ok": False, "status": "skipped",
+                       "error": "internet is down \u2014 ntfy cannot deliver"}
+                results.append(res)
+                self.last = dict(res, ts=self.clock())
+                log.info("ntfy skipped for %r: internet is down", n.title)
+                continue
             problem = _missing(name, c)
             if problem:
                 ok, status, err = False, "", problem

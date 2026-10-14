@@ -271,3 +271,39 @@ class ClearTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetDownFlagTests(unittest.TestCase):
+    def _cfg(self):
+        cfg = copy.deepcopy(settings.DEFAULTS["alerts"])
+        cfg["down_after_s"] = 0
+        cfg["group_window_s"] = 0
+        cfg["quiet"]["enabled"] = False
+        return cfg
+
+    def test_net_down_flag_set_on_notification(self):
+        eng = alerts.AlertEngine({}, started=0.0)
+        conds = [{"key": "net:internet", "kind": "net_down", "severity": "critical",
+                  "title": "Internet is unreachable", "target": "internet", "node": None}]
+        notes = eng.process(conds, 1000.0, self._cfg(), [], "lab")
+        self.assertTrue(notes)
+        self.assertTrue(all(n.net_down for n in notes))
+        self.assertIn("ntfy skipped", notes[0].message)
+
+    def test_no_net_down_no_flag(self):
+        eng = alerts.AlertEngine({}, started=0.0)
+        conds = [{"key": "check:101:80", "kind": "service_down", "severity": "critical",
+                  "title": "web is down", "target": 101, "node": "pve"}]
+        notes = eng.process(conds, 1000.0, self._cfg(), [], "lab")
+        self.assertTrue(notes)
+        self.assertFalse(notes[0].net_down)
+        self.assertNotIn("ntfy skipped", notes[0].message)
+
+    def test_net_down_pending_does_not_flag(self):
+        eng = alerts.AlertEngine({}, started=0.0)
+        cfg = self._cfg()
+        cfg["down_after_s"] = 3600  # net_down stays pending
+        conds = [{"key": "net:internet", "kind": "net_down", "severity": "critical",
+                  "title": "Internet is unreachable", "target": "internet", "node": None}]
+        notes = eng.process(conds, 1000.0, cfg, [], "lab")
+        self.assertEqual(notes, [])
