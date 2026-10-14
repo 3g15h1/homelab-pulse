@@ -672,7 +672,7 @@ function renderChrome() {
   $("bannerText").innerHTML = demo ? "<b>Demo mode:</b> a simulated two-node cluster (PULSE_PVE=demo). Set PULSE_PVE=live to watch your own lab." : "";
   $("mapTag").style.display = src.pve.mode === "demo" ? "" : "none"; $("mapTag").className = "tag demo"; $("mapTag").textContent = "demo data";
   const parts = Object.entries(src).map(([k, s]) => {
-    const label = { pve: "Proxmox", probes: "Health checks", discovery: "Discovery", store: "History", alerts: "Alerts" }[k] || k;
+    const label = { pve: "Proxmox", probes: "Health checks", discovery: "Discovery", store: "History", alerts: "Alerts", heal: "Self-healing" }[k] || k;
     return `${label}: ${s.mode}${s.ok === false ? ` <span class="err">— ${esc(s.error)}</span>` : s.updated ? ` · ${ago(s.updated, S.now)}` : ""}`;
   });
   $("footer").innerHTML = parts.map((p) => `<span>${p}</span>`).join("");

@@ -22,6 +22,9 @@ import auth
 import collect
 import demo
 import discover
+import gate_client
+import heal as heal_mod
+import recipes as recipes_mod
 import notify
 import probes
 import settings as settings_mod
@@ -66,8 +69,10 @@ def build_collector(env=os.environ):
         st = store_mod.Store(":memory:")
         st.put("admin", auth.hash_password("demo", iterations=1000))
         net = demo.DemoNet()
+        st.put("config", {"heal": {"mode": "auto", "recipes": {}}})      # the demo shows healing in action
         c = collect.Collector(demo.DemoPve(), "demo", net, probe_fn=net.probe, overrides_path=ov, ca_path=ca,
-                              store=st, notifier=notify.Notifier(st, public_url))
+                              store=st, notifier=notify.Notifier(st, public_url),
+                              heal=heal_mod.HealEngine(demo.DemoGate(net), st))
         c.demo, c.admin_ready = True, True
         return c
     host = env.get("PULSE_PVE_HOST")
@@ -79,8 +84,13 @@ def build_collector(env=os.environ):
     db = env.get("PULSE_DB") or str(Path(env.get("STATE_DIRECTORY", "/var/lib/homelab-pulse").split(":")[0]) / "pulse.db")
     st = store_mod.Store(db)
     pve = sources.PveClient(host, int(env.get("PULSE_PVE_PORT", 8006)), token, ca, env.get("PULSE_PVE_TLS_NAME") or None)
+    healer = None
+    if env.get("PULSE_HEAL_GATE"):              # set by install.sh --enable-heal
+        gate = gate_client.GateClient(env["PULSE_HEAL_GATE"], env.get("PULSE_HEAL_KEY", "/etc/homelab-pulse/heal_key"),
+                                      known_hosts=str(Path(db).parent / "heal_known_hosts"))
+        healer = heal_mod.HealEngine(gate, st)
     c = collect.Collector(pve, "live", discover.Net(), probe_fn=probes.run, overrides_path=ov, ca_path=ca,
-                          store=st, notifier=notify.Notifier(st, public_url))
+                          store=st, notifier=notify.Notifier(st, public_url), heal=healer)
     c.demo = False
     c.admin_ready = auth.ensure_admin(st, env.get("PULSE_ADMIN_PASSWORD_FILE", "/etc/homelab-pulse/admin-password"))
     return c
@@ -90,6 +100,7 @@ def make_handler(collector):
     st = collector.store
     sessions = auth.Sessions(st, collector.clock)
     limiter = auth.RateLimiter(clock=collector.clock)
+    token_limiter = auth.RateLimiter(clock=collector.clock)
     demo_mode = getattr(collector, "demo", False)
 
     class Handler(BaseHTTPRequestHandler):
@@ -174,6 +185,17 @@ def make_handler(collector):
 
         def _post(self):
             path = urllib.parse.unquote(self.path.split("?", 1)[0])
+            m = re.fullmatch(r"/api/heal/run/([A-Za-z0-9_.-]{1,120})", path)
+            if m:                                 # "Run fix" from a phone notification: the token is the auth
+                ip = self.client_address[0]
+                if token_limiter.blocked(ip):
+                    raise _HttpError(429, "too many attempts; wait a minute")
+                d = collector.heal.redeem(m.group(1), collector.clock()) if collector.heal else None
+                if not d:
+                    token_limiter.fail(ip)
+                    raise _HttpError(403, "this fix link is not valid (used, expired or wrong)")
+                collector.heal.start(d, collector.clock())
+                return self._send(200, {"ok": True, "text": f"Running: {d.recipe['name']}"})
             if path == "/api/login":
                 self._guard(need_session=False)
                 ip = self.client_address[0]
@@ -217,6 +239,21 @@ def make_handler(collector):
                 except ValueError as e:
                     raise _HttpError(400, str(e)) from None
                 return self._send(200, {"ok": True}, cookie=self._cookie("", 0))
+            if path in ("/api/heal/test", "/api/heal/run"):
+                if not collector.heal:
+                    raise _HttpError(409, "no heal gate installed")
+                b = self._body()
+                d = collector.heal_decision(str(b.get("recipe_id", "")), str(b.get("check_id", "")),
+                                            "manual" if path.endswith("run") else "dry_run")
+                if not d:
+                    raise _HttpError(400, "unknown recipe or check")
+                if path.endswith("test"):
+                    try:
+                        res = collector.heal.gate.run(d.recipe["id"], d.vmid, d.port or 0, target=d.target, dry_run=True)
+                    except gate_client.GateError as e:
+                        res = {"ok": False, "error": str(e)}
+                    return self._send(200, res)
+                return self._send(200, collector.heal.run_now(d))
             m = re.fullmatch(r"/api/alerts/(.{1,200})/clear", path)
             if m:
                 collector.clear_alert(m.group(1))
@@ -224,7 +261,37 @@ def make_handler(collector):
             raise _HttpError(404, "not found")
 
         def _put(self):
-            if self.path.split("?", 1)[0] != "/api/settings":
+            path = urllib.parse.unquote(self.path.split("?", 1)[0])
+            if path == "/api/heal/settings":
+                self._guard()
+                b = self._body()
+                current = settings_mod.load(st)
+                try:
+                    doc = settings_mod.validate(dict(current, heal={"mode": b.get("mode"), "recipes": b.get("recipes", {})}))
+                except settings_mod.SettingsError as e:
+                    raise _HttpError(400, e.message, path=e.path) from None
+                st.put("config", doc)
+                return self._send(200, {"heal": doc["heal"]})
+            m = re.fullmatch(r"/api/heal/override/(\d{3,9}:\d{1,5})", path)
+            if path.startswith("/api/heal/override/"):
+                self._guard()
+                if not m:
+                    raise _HttpError(400, "invalid check id")
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n <= MAX_BODY else b""
+                b = json.loads(raw) if raw.strip() else None
+                if b is None:
+                    st.set_override(m.group(1), None)
+                elif b == {"skip": True}:
+                    st.set_override(m.group(1), b)
+                elif set(b) == {"unit"} and (recipes_mod.UNIT_RE.fullmatch(str(b["unit"])) or recipes_mod.SERVICE_RE.fullmatch(str(b["unit"]))):
+                    st.set_override(m.group(1), {"unit": b["unit"]})
+                elif set(b) == {"container"} and recipes_mod.CONTAINER_RE.fullmatch(str(b["container"])):
+                    st.set_override(m.group(1), {"container": b["container"]})
+                else:
+                    raise _HttpError(400, "override must be {unit}, {container}, {skip: true} or null")
+                return self._send(200, {"ok": True})
+            if path != "/api/settings":
                 raise _HttpError(404, "not found")
             self._guard()
             current = settings_mod.load(st)
@@ -258,6 +325,9 @@ def make_handler(collector):
             path, _, query = self.path.partition("?")
             if path in ("/api/settings", "/api/deliveries", "/api/mutes"):
                 return self._get_admin(path)
+            if path == "/api/heal":
+                self._need_session()
+                return self._send(200, collector.heal_overview())
             if path == "/api/session":
                 return self._send(200, {"signed_in": self._signed_in(), "admin_set": bool(st.get("admin")),
                                         "demo": demo_mode})

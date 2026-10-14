@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "id": "homeassistant-core-restart",
+  "name": "Restart Home Assistant Core (HAOS)",
+  "description": "On Home Assistant OS: checks the configuration first and restarts Home Assistant Core only if it is valid. Uses the supervisor CLI through the QEMU guest agent.",
+  "when": {"alert": "service_down", "product": ["Home Assistant"]},
+  "do": {"exec": [["docker", "exec", "hassio_cli", "ha", "core", "check"], ["docker", "exec", "hassio_cli", "ha", "core", "restart"]]},
+  "guest": ["qemu"],
+  "safety": {"max_per_hour": 1, "verify_s": 300, "timeout_s": 240, "default_mode": "ask"}
+}

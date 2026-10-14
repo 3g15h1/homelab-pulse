@@ -102,6 +102,41 @@ How it behaves:
 - **Reminders:** optional, while something stays broken.
 - **Restarts:** alert state survives restarts and upgrades, so nothing is sent twice.
 
+## Self-healing (optional)
+
+When a check fails, Pulse can try a **first-response fix** before alerting you. For example, it can
+restart the service or Docker container behind the check, reload nginx after a config test, or run
+`ha core check` and then `ha core restart` on Home Assistant OS. Fixes are **recipes**: small JSON files
+that ship with Pulse, come from the community, or that you write yourself. See
+**[docs/recipes.md](docs/recipes.md)**.
+
+<p align="center"><img src="docs/screenshots/healing.png" width="560" alt="Self-healing settings"></p>
+
+**Turning it on gives Pulse limited, audited write access to your guests.** Here is how it's kept
+narrow:
+- **The gate.** A small gate script on the Proxmox host (`pulse-heal-gate`) is the only thing that runs
+  fixes. Pulse reaches it with an SSH key that can do nothing else and only works from Pulse's IP.
+- **Recipes on the host only.** The gate runs recipes stored on the host and nothing else. Commands
+  are argument lists, never shell strings, and a safety check refuses anything destructive.
+- **Limits.** Each recipe has its own hourly limit, and the whole lab has a budget (10 fixes an hour by
+  default). Pulse's own container and anything in a deny list are never touched.
+- **Logging.** Every request is logged on the host.
+
+Setting it up:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/3g15h1/homelab-pulse/main/install.sh)" install.sh --enable-heal
+```
+
+It starts in **Dry run**, which logs what it would do and changes nothing. Watch the "Recent fixes" list
+for a while, then choose **Ask first** (a "Run fix" button on the alert) or **Automatic** on
+**Settings → Self-healing**.
+
+Turning it off, from lightest to most complete:
+- set the mode to *Off* on the settings page;
+- `echo 0 > /etc/pulse-heal/enabled` on the host (the kill switch);
+- `install.sh --disable-heal`, which removes the key and the gate.
+
 ## Early warnings
 
 Problems that aren't outages yet. They show in an **Attention** strip on the dashboard and can alert too:
@@ -235,7 +270,8 @@ unless another Pulse install still uses it.
 python3 -m unittest discover -s tests -t .
 ```
 
-`pulse/alerts.py` is the alert state machine, `pulse/early.py` the early warnings, `pulse/notify.py` delivery,
+`pulse/heal.py` and `heal/pulse-heal-gate` are self-healing (shared rules in `pulse/recipes.py`, recipes in
+`recipes/`), `pulse/alerts.py` is the alert state machine, `pulse/early.py` the early warnings, `pulse/notify.py` delivery,
 `pulse/store.py` the SQLite history, `pulse/discover.py` the discovery pipeline, `pulse/catalog.py` the list of recognised software and
 scanned ports, `pulse/collect.py` the polling and the snapshot, `pulse/demo.py` the simulated cluster.
 New software to recognise is usually a single line in `catalog.RULES`.

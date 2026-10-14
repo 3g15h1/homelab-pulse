@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "pihole-restart-dns",
+  "name": "Restart Pi-hole's DNS",
+  "description": "Restarts Pi-hole's DNS resolver with its own command.",
+  "when": {"alert": "service_down", "product": ["Pi-hole"]},
+  "do": {"exec": [["pihole", "restartdns"]]},
+  "safety": {"max_per_hour": 2, "verify_s": 60, "default_mode": "auto"}
+}

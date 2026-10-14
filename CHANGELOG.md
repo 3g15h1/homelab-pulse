@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0 — 2026-10-14
+
+- **Self-healing (opt-in):** first-response fixes run through a narrow, audited gate on the Proxmox host
+  (`install.sh --enable-heal`). Modes Off / Dry run (default) / Ask first ("Run fix" button in Home Assistant
+  and ntfy notifications) / Automatic. A fix that works sends one message ("…was down; restarted X; back
+  after 40 s"); one that doesn't adds "tried: …" to the alert.
+- **Recipes:** JSON files that match on what Pulse discovers (alert, product, port, tags, warning rule), so they
+  work in any lab. Built-ins: restart the service or Docker container behind a check, container disk cleanup,
+  nginx/Caddy reload, Home Assistant Core check-and-restart (HAOS), Pi-hole DNS, Jellyfin, Plex. Your own go in
+  `/etc/pulse-heal/recipes.d/`. Safety lint, per-recipe hourly limits, lab-wide budget, kill switch, deny list.
+- Settings page: self-healing section with recipe tests (dry run), learned targets and overrides, history.
+- Docs: `docs/recipes.md` (schema, matching, trust model, writing and contributing recipes).
+
 ## 1.1.0 — 2026-10-13
 
 - **Alerts** to a generic webhook (e.g. Home Assistant) and/or ntfy: service down, node offline, Proxmox

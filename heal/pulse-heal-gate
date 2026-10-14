@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""pulse-heal-gate: the only privileged part of Homelab Pulse's self-healing. Runs on a Proxmox host
+as root, as the forced command of Pulse's SSH key:
+
+    restrict,command="/usr/local/sbin/pulse-heal-gate",from="<pulse-ip>" ssh-ed25519 ... pulse-heal-ct<id>
+
+The request arrives in SSH_ORIGINAL_COMMAND, is split with shlex and validated; nothing is ever run
+through a shell on this host. Verbs:
+
+    version                                   gate + schema version, kill-switch state
+    list-recipes                              every recipe with source and problems (read-only)
+    inspect <vmid> <port>                     which systemd unit / Docker container owns a port (read-only)
+    run <recipe> <vmid> <port> [--target unit=X|container=Y] [--dry-run]
+
+Only recipes in /usr/share/pulse-heal/recipes (shipped) and /etc/pulse-heal/recipes.d (yours) can
+run. Limits: kill switch /etc/pulse-heal/enabled, deny list /etc/pulse-heal/deny, Pulse's own guest
+(/etc/pulse-heal/self), hourly budget (/etc/pulse-heal/gate.conf), per-recipe max_per_hour, timeouts.
+Every request is logged to /var/log/pulse-heal-gate.log. Local use: pulse-heal-gate --check FILE...
+"""
+import fcntl
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, os.environ.get("PULSE_HEAL_LIB", "/usr/local/lib/pulse-heal"))
+import recipes  # noqa: E402
+
+VERSION = "1.2.0"
+ETC = Path(os.environ.get("PULSE_HEAL_ETC", "/etc/pulse-heal"))
+SHARE = Path(os.environ.get("PULSE_HEAL_SHARE", "/usr/share/pulse-heal/recipes"))
+STATE = Path(os.environ.get("PULSE_HEAL_STATE", "/var/lib/pulse-heal"))
+LOG = Path(os.environ.get("PULSE_HEAL_LOG", "/var/log/pulse-heal-gate.log"))
+DEFAULT_BUDGET, MAX_BUDGET = 10, 30
+VMID_RE = re.compile(r"[1-9][0-9]{2,8}")
+PORT_RE = re.compile(r"[0-9]{1,5}")
+NOT_TARGETS = {"docker.service", "containerd.service", "init.scope", "systemd-journald.service", "sshd.service",
+               "ssh.service", "pve-container@.service"}
+INSPECT_TIMEOUT = 15
+
+
+class Refused(Exception):
+    pass
+
+
+class Failed(Exception):
+    def __init__(self, result):
+        super().__init__("execution failed")
+        self.result = result
+
+
+# ---------------------------------------------------------------- host facts
+
+def _host(argv, timeout=20):
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+
+def guests():
+    p = _host(["pvesh", "get", "/cluster/resources", "--type", "vm", "--output-format", "json"])
+    if p.returncode:
+        raise Refused("can't read the cluster's guest list")
+    return {int(g["vmid"]): g for g in json.loads(p.stdout) if g.get("type") in ("lxc", "qemu")}
+
+
+def nodes():
+    p = _host(["pvesh", "get", "/cluster/status", "--output-format", "json"])
+    if p.returncode:
+        raise Refused("can't read the cluster status")
+    out = {}
+    for e in json.loads(p.stdout):
+        if e.get("type") == "node":
+            out[e["name"]] = {"ip": e.get("ip"), "local": bool(e.get("local"))}
+    return out
+
+
+def _read(path, default=""):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return default
+
+
+def enabled():
+    return _read(ETC / "enabled") == "1"
+
+
+def budget():
+    try:
+        b = int(json.loads(_read(ETC / "gate.conf", "{}")).get("budget_per_hour", DEFAULT_BUDGET))
+    except (ValueError, TypeError, AttributeError):
+        b = DEFAULT_BUDGET
+    return max(1, min(MAX_BUDGET, b))
+
+
+def all_recipes():
+    as_root = os.geteuid() == 0          # as root, recipe files must be root-owned too
+    return recipes.merge(recipes.load_dir(SHARE, "built-in", require_root=as_root),
+                         recipes.load_dir(ETC / "recipes.d", "local", require_root=as_root))
+
+
+# ---------------------------------------------------------------- running things inside a guest
+
+class Guest:
+    def __init__(self, vmid, info, node_map):
+        self.vmid, self.type, self.node = vmid, info["type"], info.get("node")
+        self.local = node_map.get(self.node, {}).get("local", True)
+        self.node_ip = node_map.get(self.node, {}).get("ip")
+
+    def _argv(self, cmd, timeout):
+        if self.type == "lxc":
+            argv = ["pct", "exec", str(self.vmid), "--", *cmd]
+        else:
+            argv = ["qm", "guest", "exec", str(self.vmid), "--timeout", str(timeout), "--", *cmd]
+        if self.local:
+            return argv
+        if not self.node_ip:
+            raise Refused(f"don't know how to reach node {self.node}")
+        # Proxmox clusters trust each other's root key (used for migration). The remote side gets one
+        # quoted string; every word in it was validated above.
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", f"root@{self.node_ip}", shlex.join(argv)]
+
+    def run(self, cmd, timeout):
+        """-> (exit code, output). Exit 124 on timeout."""
+        argv = self._argv(cmd, timeout)
+        grace = 0 if argv[0] == "pct" else 5          # qm/ssh get a moment to report their own timeout
+        try:
+            p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout + grace)
+        except subprocess.TimeoutExpired:
+            return 124, f"timed out after {timeout} s"
+        out = (p.stdout or "") + (p.stderr or "")
+        if self.type == "qemu" and p.returncode == 0:
+            try:
+                d = json.loads(p.stdout)
+                return int(d.get("exitcode", 1)), (d.get("out-data") or "") + (d.get("err-data") or "")
+            except (json.JSONDecodeError, ValueError):
+                return 1, out
+        return p.returncode, out
+
+
+# ---------------------------------------------------------------- verbs
+
+def check_guest(vmid_s, allow_denied=False):
+    if not VMID_RE.fullmatch(vmid_s or ""):
+        raise Refused("vmid must be a number")
+    vmid = int(vmid_s)
+    gs = guests()
+    if vmid not in gs:
+        raise Refused(f"no such guest {vmid}")
+    if gs[vmid].get("status") != "running":
+        raise Refused(f"guest {vmid} is not running")
+    if _read(ETC / "self") == str(vmid):
+        raise Refused("refusing to act on Pulse's own guest")
+    if not allow_denied and str(vmid) in _read(ETC / "deny").split():
+        raise Refused(f"guest {vmid} is on the deny list ({ETC / 'deny'})")
+    return Guest(vmid, gs[vmid], nodes())
+
+
+def check_port(port_s, allow_none=False):
+    """1-65535; with allow_none, 0 means "no port" (early-warning fixes aren't about a port)."""
+    if not PORT_RE.fullmatch(port_s or ""):
+        raise Refused("port must be 1-65535")
+    port = int(port_s)
+    if allow_none and port == 0:
+        return None
+    if not 1 <= port <= 65535:
+        raise Refused("port must be 1-65535")
+    return port
+
+
+def do_inspect(args):
+    if len(args) != 2:
+        raise Refused("usage: inspect <vmid> <port>")
+    g, port = check_guest(args[0], allow_denied=True), check_port(args[1])
+    code, comm = g.run(["cat", "/proc/1/comm"], INSPECT_TIMEOUT)
+    init = "systemd" if comm.strip() == "systemd" else None
+    if not init:
+        init = "openrc" if g.run(["which", "rc-service"], INSPECT_TIMEOUT)[0] == 0 else "none"
+    unit = container = pid = None
+    code, out = g.run(["ss", "-ltnpH", f"sport = :{port}"], INSPECT_TIMEOUT)
+    m = re.search(r"pid=(\d+)", out)
+    if m:
+        pid = int(m.group(1))
+        _c, cg = g.run(["cat", f"/proc/{pid}/cgroup"], INSPECT_TIMEOUT)
+        u = re.search(r"/([A-Za-z0-9@._-]+\.service)\s*$", cg.strip().splitlines()[-1] if cg.strip() else "")
+        if u and u.group(1) not in NOT_TARGETS and recipes.UNIT_RE.fullmatch(u.group(1)):
+            unit = u.group(1)
+    code, out = g.run(["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"], INSPECT_TIMEOUT)
+    if code == 0:
+        for line in out.splitlines():
+            name, _, ports = line.partition("\t")
+            if re.search(rf"(^|[ ,:]){port}->", ports) and recipes.CONTAINER_RE.fullmatch(name.strip()):
+                container, unit = name.strip(), None
+                break
+    return {"ok": True, "vmid": g.vmid, "port": port, "init": init, "unit": unit, "container": container, "pid": pid}
+
+
+def _runs():
+    try:
+        data = json.loads(_read(STATE / "runs.json", "[]"))
+    except json.JSONDecodeError:
+        data = []
+    now = time.time()
+    return [r for r in data if now - r.get("ts", 0) < 3600]
+
+
+def do_run(args):
+    if len(args) < 3:
+        raise Refused("usage: run <recipe> <vmid> <port> [--target unit=X|container=Y] [--dry-run]")
+    rid, vmid_s, port_s, rest = args[0], args[1], args[2], args[3:]
+    if not recipes.ID_RE.fullmatch(rid):
+        raise Refused("unknown recipe")
+    dry = False
+    target = {}
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--dry-run":
+            dry = True
+        elif a == "--target" and i + 1 < len(rest):
+            k, _, v = rest[i + 1].partition("=")
+            if k == "unit" and (recipes.UNIT_RE.fullmatch(v) or recipes.SERVICE_RE.fullmatch(v)):
+                target["unit"] = v
+            elif k == "container" and recipes.CONTAINER_RE.fullmatch(v):
+                target["container"] = v
+            else:
+                raise Refused("invalid --target (unit=<name>.service or container=<name>)")
+            if len(target) > 1:
+                raise Refused("only one --target")
+            i += 1
+        else:
+            raise Refused(f"unexpected argument {a[:40]!r}")
+        i += 1
+    if not dry and not enabled():
+        raise Refused(f"self-healing is disabled on this host ({ETC / 'enabled'})")
+    port = check_port(port_s, allow_none=True)
+    rec = next((r for r in all_recipes() if r["id"] == rid), None)
+    if not rec:
+        raise Refused("unknown recipe")
+    if rec.get("errors"):
+        raise Refused("recipe can't run: " + "; ".join(rec["errors"]) + (" (lint)" if any(e.startswith("lint") for e in rec["errors"]) else ""))
+    g = check_guest(vmid_s)
+    if g.type not in rec["guest"] or ("vmids" in rec["when"] and g.vmid not in rec["when"]["vmids"]):
+        raise Refused("recipe is not for this guest")
+    needs = set(a for step in rec["do"].get("exec", []) for a in step if a in recipes.PLACEHOLDERS)
+    if rec["do"].get("restart") == "unit" or "{unit}" in needs:
+        if "unit" in target:
+            code, comm = g.run(["cat", "/proc/1/comm"], INSPECT_TIMEOUT)
+            target["init"] = "systemd" if comm.strip() == "systemd" else "openrc"
+            probe = ["systemctl", "cat", target["unit"]] if target["init"] == "systemd" else ["rc-service", "-e", target["unit"]]
+            if g.run(probe, INSPECT_TIMEOUT)[0] != 0:
+                raise Refused(f"unit {target['unit']} does not exist in guest {g.vmid}")
+    if rec["do"].get("restart") == "container" or "{container}" in needs:
+        if "container" in target:
+            code, out = g.run(["docker", "ps", "-a", "--format", "{{.Names}}"], INSPECT_TIMEOUT)
+            if code != 0 or target["container"] not in out.split():
+                raise Refused(f"container {target['container']} does not exist in guest {g.vmid}")
+    target["port"] = port
+    try:
+        steps = recipes.resolve(rec, target)
+    except recipes.RecipeError as e:
+        raise Refused(str(e)) from None
+    if dry:
+        return {"ok": True, "recipe": rid, "vmid": g.vmid, "dry_run": True,
+                "steps": [{"argv": s, "dry_run": True} for s in steps]}
+    STATE.mkdir(parents=True, exist_ok=True)
+    with open(STATE / "lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        runs = _runs()
+        if len(runs) >= budget():
+            raise Refused(f"gate budget of {budget()} runs per hour used up")
+        mine = [r for r in runs if r["recipe"] == rid and r["vmid"] == g.vmid]
+        cap = rec["safety"]["max_per_hour"]
+        if len(mine) >= cap:
+            raise Refused(f"recipe already ran {len(mine)} times for guest {g.vmid} in the last hour (max {cap} per hour)")
+        runs.append({"ts": time.time(), "recipe": rid, "vmid": g.vmid})
+        (STATE / "runs.json").write_text(json.dumps(runs))
+        results, output, ok = [], "", True
+        for argv in steps:
+            code, out = g.run(argv, rec["safety"]["timeout_s"])
+            results.append({"argv": argv, "exit": code})
+            output = (output + out)[-2048:]
+            if code != 0:
+                ok = False
+                break
+    result = {"ok": ok, "recipe": rid, "vmid": g.vmid, "steps": results, "output": output}
+    if not ok:
+        raise Failed(result)
+    return result
+
+
+def do_list(args):
+    keep = ("id", "name", "description", "source", "errors", "when", "do", "guest", "safety")
+    return {"ok": True, "recipes": [{k: r[k] for k in keep if k in r} for r in all_recipes()]}
+
+
+def do_version(args):
+    return {"ok": True, "version": VERSION, "schema": recipes.SCHEMA_VERSION, "enabled": enabled(),
+            "budget_per_hour": budget()}
+
+
+VERBS = {"version": do_version, "list-recipes": do_list, "inspect": do_inspect, "run": do_run}
+
+
+def log(entry):
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def check_files(paths):
+    out, ok = [], True
+    for p in paths:
+        try:
+            rec = recipes.validate(json.loads(Path(p).read_text()))
+            errs = [f"lint: {e}" for e in recipes.lint(rec)]
+        except json.JSONDecodeError as e:
+            errs = [f"invalid JSON (line {e.lineno})"]
+        except (recipes.RecipeError, OSError) as e:
+            errs = [str(e)]
+        ok = ok and not errs
+        out.append({"file": str(p), "errors": errs})
+    print(json.dumps({"ok": ok, "files": out}))
+    return 0 if ok else 1
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--check":
+        return check_files(sys.argv[2:])
+    raw = os.environ.get("SSH_ORIGINAL_COMMAND", " ".join(shlex.quote(a) for a in sys.argv[1:]))
+    t0 = time.time()
+    entry = {"ts": round(t0, 3), "client": (os.environ.get("SSH_CLIENT") or "local").split()[0]}
+    try:
+        try:
+            words = shlex.split(raw)
+        except ValueError:
+            raise Refused("unparseable request") from None
+        if len(raw) > 1000 or not words or words[0] not in VERBS:
+            entry.update(verb=(words[0][:20] if words else ""), args=[w[:60] for w in words[1:8]])
+            raise Refused("unknown verb (version, list-recipes, inspect, run)")
+        entry.update(verb=words[0], args=[w[:120] for w in words[1:]])
+        result, code = VERBS[words[0]](words[1:]), 0
+    except Refused as e:
+        result, code = {"ok": False, "error": str(e)}, 2
+    except Failed as e:
+        result, code = e.result, 3
+    except Exception as e:  # noqa: BLE001 - never leak a traceback to the client
+        result, code = {"ok": False, "error": f"internal error: {type(e).__name__}"}, 2
+    entry.update(ok=result.get("ok"), error=result.get("error"), ms=round((time.time() - t0) * 1000))
+    if "steps" in result:
+        entry["steps"] = [{"argv": s["argv"], "exit": s.get("exit")} for s in result["steps"]]
+    log(entry)
+    print(json.dumps(result))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

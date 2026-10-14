@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "restart-port-container",
+  "name": "Restart the Docker container behind the check",
+  "description": "Restarts the Docker container that publishes the failed check's port.",
+  "when": {"alert": "service_down"},
+  "do": {"restart": "container"},
+  "safety": {"max_per_hour": 2, "verify_s": 90, "default_mode": "auto"}
+}

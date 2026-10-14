@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "restart-port-owner",
+  "name": "Restart the service behind the check",
+  "description": "Restarts the systemd (or OpenRC) service that owns the failed check's port. Pulse learns which service that is while the check is healthy.",
+  "when": {"alert": "service_down"},
+  "do": {"restart": "unit"},
+  "safety": {"max_per_hour": 2, "verify_s": 90, "default_mode": "auto"}
+}

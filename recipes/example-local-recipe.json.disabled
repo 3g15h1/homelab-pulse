@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "id": "my-app-restart",
+  "name": "Restart my app",
+  "description": "Example of a local recipe. Copy to /etc/pulse-heal/recipes.d/my-app-restart.json on the Proxmox host, edit, and enable it on Pulse's settings page.",
+  "when": {"alert": "service_down", "port": [8080], "vmids": [123]},
+  "do": {"exec": [["systemctl", "restart", "my-app.service"]]},
+  "guest": ["lxc"],
+  "safety": {"max_per_hour": 2, "verify_s": 60, "default_mode": "ask"}
+}

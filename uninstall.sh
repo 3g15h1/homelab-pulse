@@ -24,6 +24,15 @@ fi
 if [ -n "$VMID" ]; then
   pct stop "$VMID" 2>/dev/null || true
   pct destroy "$VMID"
+  # self-healing: drop Pulse's restricted key; remove the gate if no other Pulse uses it
+  if [ -f /root/.ssh/authorized_keys ]; then
+    grep -v " pulse-heal-ct$VMID\$" /root/.ssh/authorized_keys > /root/.ssh/authorized_keys.pulse-tmp || true
+    mv /root/.ssh/authorized_keys.pulse-tmp /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+    if ! grep -q " pulse-heal-ct[0-9]*\$" /root/.ssh/authorized_keys; then
+      rm -f /usr/local/sbin/pulse-heal-gate /etc/logrotate.d/pulse-heal-gate
+      rm -rf /usr/local/lib/pulse-heal /usr/share/pulse-heal
+    fi
+  fi
 fi
 if [ -n "$VMID" ]; then pveum user token remove pulse@pve "ct$VMID" 2>/dev/null || true; fi
 left=$(pveum user token list pulse@pve --output-format json 2>/dev/null |

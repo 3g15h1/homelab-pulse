@@ -153,3 +153,29 @@ class NotifyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActionTests(unittest.TestCase):
+    def setUp(self):
+        self.store = store.Store(":memory:")
+        self.n = notify.Notifier(self.store, "http://pulse.local/", sleep=lambda s: None)
+
+    def noted(self):
+        n = note()
+        n.items[0]["actions"] = [{"id": "tok", "title": "Run fix: Restart the service behind the check",
+                                  "url": "http://pulse.local/api/heal/run/tok"}]
+        return n
+
+    def test_webhook_items_carry_actions(self):
+        c = Capture()
+        self.addCleanup(c.close)
+        self.n.send_now(self.noted(), cfg(webhook={"enabled": True, "url": c.url}))
+        body = json.loads(c.requests[0]["body"])
+        self.assertEqual(body["items"][0]["actions"][0]["url"], "http://pulse.local/api/heal/run/tok")
+
+    def test_ntfy_actions_header(self):
+        c = Capture()
+        self.addCleanup(c.close)
+        self.n.send_now(self.noted(), cfg(ntfy={"enabled": True, "server": c.url, "topic": "t"}))
+        self.assertEqual(c.requests[0]["headers"]["Actions"],
+                         "http, Run fix, http://pulse.local/api/heal/run/tok, method=POST, clear=true")

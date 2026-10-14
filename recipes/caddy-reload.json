@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "caddy-reload",
+  "name": "Reload Caddy",
+  "description": "Reloads Caddy's configuration (falls back to a restart if it isn't running).",
+  "when": {"alert": "service_down", "product": ["Caddy"]},
+  "do": {"exec": [["systemctl", "reload-or-restart", "caddy"]]},
+  "safety": {"max_per_hour": 2, "verify_s": 60, "default_mode": "auto"}
+}

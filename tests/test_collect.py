@@ -68,7 +68,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(s["nodes"][0]["disks"][0]["wear_used"], 4)
         self.assertEqual((s["nodes"][0]["pve"], s["nodes"][0]["kernel"]), ("9.2.20", "7.0.14-19-pve"))
         self.assertEqual({k: v["ok"] for k, v in s["sources"].items()},
-                         {"pve": True, "probes": True, "discovery": True, "store": True, "alerts": None})
+                         {"pve": True, "probes": True, "discovery": True, "store": True, "alerts": None, "heal": None})
         self.assertEqual(len(c.history_for("pve2")["cpu"]), 2)
         self.assertEqual(len(c.history_for(200)["cpu"]), 2)
         self.assertIsNone(c.history_for("nope"))

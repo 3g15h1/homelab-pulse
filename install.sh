@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO="3g15h1/homelab-pulse"
 REF="main"
-VMID="" STORAGE="" BRIDGE="vmbr0" IP="dhcp" GW="" SRC="" ROTATE=0 DRY=0 SHOW_PW=0
+VMID="" STORAGE="" BRIDGE="vmbr0" IP="dhcp" GW="" SRC="" ROTATE=0 DRY=0 SHOW_PW=0 HEAL=""
 APP=/opt/homelab-pulse
 ETC=/etc/homelab-pulse
 TAG=homelab-pulse
@@ -29,6 +29,8 @@ Usage: install.sh [options]
   --src DIR         install from a local checkout instead of downloading
   --rotate-token    create a new API token even if the container already has one
   --show-password   print the existing admin password for the settings page
+  --enable-heal     set up self-healing: the pulse-heal-gate on this host + a restricted SSH key for Pulse
+  --disable-heal    remove self-healing (gate, key); keeps your recipes in /etc/pulse-heal/recipes.d
   --dry-run         print every change instead of making it
   -h, --help        this help
 EOF
@@ -45,6 +47,8 @@ while [ $# -gt 0 ]; do
     --src) SRC=$2; shift 2 ;;
     --rotate-token) ROTATE=1; shift ;;
     --show-password) SHOW_PW=1; shift ;;
+    --enable-heal) [ "$HEAL" = disable ] && { echo "Choose --enable-heal or --disable-heal" >&2; exit 2; }; HEAL=enable; shift ;;
+    --disable-heal) [ "$HEAL" = enable ] && { echo "Choose --enable-heal or --disable-heal" >&2; exit 2; }; HEAL=disable; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -193,10 +197,60 @@ elif ! pct exec "$VMID" -- grep -q PULSE_PVE_HOST "$ETC/env"; then
   in_ct "echo PULSE_PVE_HOST=$HOST_IP >> $ETC/env"   # older installs assumed the host's address
 fi
 
+# ------------------------------------------------------------------ self-healing (optional)
+GATE=/usr/local/sbin/pulse-heal-gate HEAL_ETC=/etc/pulse-heal AUTH=/root/.ssh/authorized_keys KEYTAG="pulse-heal-ct$VMID"
+install_gate_files() {   # the gate, its shared rules module and the built-in recipes (fresh install and upgrades)
+  run install -d -m 755 /usr/local/lib/pulse-heal /usr/share/pulse-heal/recipes "$HEAL_ETC" "$HEAL_ETC/recipes.d"
+  run install -d -m 700 /var/lib/pulse-heal
+  run install -m 755 "$SRC/heal/pulse-heal-gate" "$GATE"
+  run install -m 644 "$SRC/pulse/recipes.py" /usr/local/lib/pulse-heal/recipes.py
+  run find /usr/share/pulse-heal/recipes -name '*.json' -delete
+  for f in "$SRC"/recipes/*.json; do run install -m 644 "$f" /usr/share/pulse-heal/recipes/; done
+}
+if [ "$HEAL" = enable ]; then
+  say "Setting up self-healing (gate on this host, restricted key for CT $VMID)"
+  install_gate_files
+  [ -e "$HEAL_ETC/enabled" ] || { [ "$DRY" = 1 ] && echo "+ echo 1 > $HEAL_ETC/enabled" || echo 1 > "$HEAL_ETC/enabled"; }
+  [ -e "$HEAL_ETC/deny" ] || run touch "$HEAL_ETC/deny"
+  [ -e "$HEAL_ETC/gate.conf" ] || { [ "$DRY" = 1 ] && echo "+ write $HEAL_ETC/gate.conf" || echo '{"budget_per_hour": 10}' > "$HEAL_ETC/gate.conf"; }
+  if [ "$DRY" = 1 ]; then echo "+ echo $VMID > $HEAL_ETC/self"; else echo "$VMID" > "$HEAL_ETC/self"; fi
+  [ -e "$HEAL_ETC/recipes.d/example-local-recipe.json.disabled" ] ||
+    run install -m 644 "$SRC/recipes/example-local-recipe.json.disabled" "$HEAL_ETC/recipes.d/"
+  if [ "$DRY" = 1 ]; then echo "+ write /etc/logrotate.d/pulse-heal-gate"; else
+    printf '/var/log/pulse-heal-gate.log {\n  weekly\n  rotate 8\n  compress\n  missingok\n  notifempty\n}\n' > /etc/logrotate.d/pulse-heal-gate; fi
+  in_ct "[ -f $ETC/heal_key ] || ssh-keygen -q -t ed25519 -N '' -C $KEYTAG -f $ETC/heal_key; chown pulse:pulse $ETC/heal_key $ETC/heal_key.pub; chmod 600 $ETC/heal_key"
+  PUB=$(pct exec "$VMID" -- cat "$ETC/heal_key.pub" 2>/dev/null | head -n1 | awk '{print $1" "$2}')
+  CTIP=$(pct exec "$VMID" -- sh -c "ip -4 -o addr show eth0 | awk '{print \$4}' | cut -d/ -f1" 2>/dev/null | head -n1)
+  [ -n "$PUB" ] || PUB="ssh-ed25519 <generated-key>"
+  [ -n "$CTIP" ] || CTIP="<ct-ip>"
+  LINE="restrict,command=\"$GATE\",from=\"$CTIP\" $PUB $KEYTAG"
+  if [ "$DRY" = 1 ]; then echo "+ replace $KEYTAG in $AUTH with: $LINE"; else
+    install -d -m 700 /root/.ssh; touch "$AUTH"; chmod 600 "$AUTH"
+    grep -v " $KEYTAG\$" "$AUTH" > "$AUTH.pulse-tmp" || true
+    printf '%s\n' "$LINE" >> "$AUTH.pulse-tmp" && mv "$AUTH.pulse-tmp" "$AUTH"
+  fi
+  in_ct "sed -i '/^PULSE_HEAL_GATE=/d; /^PULSE_HEAL_KEY=/d' $ETC/env; echo PULSE_HEAL_GATE=root@$HOST_IP >> $ETC/env; echo PULSE_HEAL_KEY=$ETC/heal_key >> $ETC/env"
+  HEAL_NOTE="Self-healing: installed in dry-run mode (nothing runs until you choose Ask first or Automatic in Settings).
+  The gate accepts Pulse's key only from $CTIP; give CT $VMID a fixed address (static or DHCP reservation)."
+elif [ "$HEAL" = disable ]; then
+  say "Removing self-healing"
+  if [ "$DRY" = 1 ]; then echo "+ remove $KEYTAG from $AUTH"; else
+    [ -f "$AUTH" ] && { grep -v " $KEYTAG\$" "$AUTH" > "$AUTH.pulse-tmp" || true; mv "$AUTH.pulse-tmp" "$AUTH"; chmod 600 "$AUTH"; }
+  fi
+  run rm -f "$GATE" /usr/local/lib/pulse-heal/recipes.py /etc/logrotate.d/pulse-heal-gate
+  run rm -rf /usr/share/pulse-heal /usr/local/lib/pulse-heal
+  in_ct "sed -i '/^PULSE_HEAL_GATE=/d; /^PULSE_HEAL_KEY=/d' $ETC/env; rm -f $ETC/heal_key $ETC/heal_key.pub /var/lib/homelab-pulse/heal_known_hosts"
+  HEAL_NOTE="Self-healing removed (your recipes in $HEAL_ETC/recipes.d were kept)."
+elif [ -x "$GATE" ]; then
+  install_gate_files          # upgrade: refresh the gate and the built-in recipes
+  HEAL_NOTE="Self-healing gate updated."
+fi
+
 in_ct "systemctl daemon-reload && systemctl enable -q homelab-pulse && systemctl restart homelab-pulse"
 
 if [ "$DRY" = 1 ]; then
   if [ "$SHOW_PW" = 1 ] && [ "$NEW_PW" = 0 ] && [ -n "$ADMIN_PW" ]; then say "Admin password: $ADMIN_PW"; fi
+  if [ -n "${HEAL_NOTE:-}" ]; then say "$HEAL_NOTE"; fi
   say "Dry run: nothing was changed."; exit 0
 fi
 
@@ -222,6 +276,7 @@ cat <<EOF
 $(if [ -n "$ADMIN_PW" ]; then printf '  Admin password:     %s%s' "$ADMIN_PW" "$([ "$NEW_PW" = 1 ] && echo '   (new; keep it somewhere safe)')";
   else printf '  Admin password:     unchanged (show it with --show-password; reset with homelab-pulse-passwd)'; fi)
 
+$(if [ -n "${HEAL_NOTE:-}" ]; then printf '\n  %s\n' "$HEAL_NOTE"; fi)
   Upgrade:    run this installer again
   Uninstall:  bash uninstall.sh   (from the repo; or: pct destroy $VMID && pveum user token remove $PVE_USER $TOKEN_ID)
 EOF

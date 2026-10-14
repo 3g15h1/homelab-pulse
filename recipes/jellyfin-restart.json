@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "jellyfin-restart",
+  "name": "Restart Jellyfin",
+  "description": "Restarts the Jellyfin service when its web UI stops answering.",
+  "when": {"alert": "service_down", "product": ["Jellyfin"]},
+  "do": {"restart": "unit"},
+  "safety": {"max_per_hour": 2, "verify_s": 120, "default_mode": "auto"}
+}

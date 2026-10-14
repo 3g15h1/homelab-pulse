@@ -48,16 +48,45 @@ def duration(seconds):
 
 
 class AlertEngine:
-    def __init__(self, saved, started, warmup_s=60):
+    def __init__(self, saved, started, warmup_s=60, on_fire=None):
         self.states = dict(saved or {})
         self.states.setdefault("_outbox", {"opened": None, "items": []})
         self.states.setdefault("_quiet", [])
+        self.states.setdefault("_pending", [])      # items from healed() waiting for the next process()
+        # on_fire(key, condition, now) -> hold-until timestamp or None. Self-healing uses it to hold a
+        # fire notification while a fix runs, so a fix that works sends one message instead of two.
+        self.on_fire = on_fire
         self.started, self.warmup_s = started, warmup_s
         self.events = []           # activity events from the latest process() call
         self.recovered = set()     # keys that resolved in the latest call (for until-recovered mutes)
 
     def clear(self, key):
         self.states.pop(key, None)
+
+    def healed(self, key, text):
+        """A fix brought this condition back. If its fire was held (not sent yet), replace it with one
+        "<x> was down; <what was done>" message; if it was already sent, mention the fix on recovery."""
+        st = self.states.get(key)
+        if not st or key.startswith("_"):
+            return
+        if st.get("sent"):
+            st["note"] = text
+            return
+        st.pop("hold_until", None)
+        st["healed"] = True
+        title = re.sub(r" is down$", " was down", st["title"])
+        self.states["_pending"].append({"key": key, "title": f"{title}; {text}", "severity": "info", "state": "healed",
+                                        "since": st["since"], "kind": st["kind"], "node": st.get("node"),
+                                        "duration": None})
+        self.events.append({"ts": st["since"], "kind": "heal", "level": "ok", "text": f"Healed: {title}; {text}", "key": key})
+
+    def annotate(self, key, text):
+        """A fix didn't help (or couldn't run): release the held fire now, with a note."""
+        st = self.states.get(key)
+        if st and not key.startswith("_"):
+            st["note"] = text
+            if "hold_until" in st:
+                st["hold_until"] = 0
 
     @staticmethod
     def _muted(key, c, mutes):
@@ -76,7 +105,7 @@ class AlertEngine:
     def _item(self, st, key, state, now):
         return {"key": key, "title": st["title"], "severity": "info" if state == "resolve" else st["severity"],
                 "state": state, "since": st["since"], "kind": st["kind"], "node": st.get("node"),
-                "duration": now - st["since"] if state == "resolve" else None}
+                "duration": now - st["since"] if state == "resolve" else None, "note": st.get("note")}
 
     def _event(self, st, key, state, now):
         if state == "fire":
@@ -86,8 +115,10 @@ class AlertEngine:
         self.events.append({"ts": now, "kind": "alert", "level": level, "text": text, "key": key})
 
     def process(self, conditions, now, cfg, mutes, lab):
-        self.events, self.recovered = [], set()
-        items = []
+        self.recovered = set()
+        heal_events = [e for e in getattr(self, "events", []) if e.get("kind") == "heal"]
+        self.events = heal_events
+        items, self.states["_pending"] = list(self.states["_pending"]), []
         present = {c["key"]: c for c in conditions if cfg["kinds"].get(c["kind"], True)}
         for key, c in present.items():
             st = self.states.get(key)
@@ -102,10 +133,22 @@ class AlertEngine:
                 st["state"] = "firing"
                 self._event(st, key, "fire", now)
                 if not muted:
+                    hold = self.on_fire(key, c, now) if self.on_fire else None
+                    if hold and hold > now:
+                        st["hold_until"] = hold            # a fix is running; wait for its outcome
+                    else:
+                        items.append(self._item(st, key, "fire", now))
+                        st.update(sent=True, last_sent=now)
+            elif st["state"] == "firing" and not muted:
+                if st.get("healed"):
+                    continue
+                if "hold_until" in st:
+                    if now < st["hold_until"]:
+                        continue
+                    del st["hold_until"]
                     items.append(self._item(st, key, "fire", now))
                     st.update(sent=True, last_sent=now)
-            elif st["state"] == "firing" and not muted:
-                if not st["sent"] or escalated:          # mute ended, or got worse
+                elif not st["sent"] or escalated:          # mute ended, or got worse
                     items.append(self._item(st, key, "fire", now))
                     st.update(sent=True, last_sent=now)
                 elif cfg["repeat_every_s"] and now - st["last_sent"] >= cfg["repeat_every_s"]:
@@ -174,12 +217,15 @@ class AlertEngine:
         def line(it):
             if it["state"] == "resolve":
                 subject = re.sub(r" (is down|is offline|stopped unexpectedly)$", "", it["title"])
-                return f"{subject} is back after {duration(it['duration'])}"
+                return f"{subject} is back after {duration(it['duration'])}" + (f" ({it['note']})" if it.get("note") else "")
+            if it["state"] == "healed":
+                return it["title"]
             return f"Still: {it['title']}" if it["state"] == "repeat" else it["title"]
 
         if len(items) == 1:
             it = items[0]
-            return Notification(line(it), line(it), severity, it["state"], items, now)
+            message = line(it) + (f"\n{it['note']}" if it.get("note") and it["state"] == "fire" else "")
+            return Notification(line(it), message, severity, it["state"], items, now)
         state = states.pop() if len(states) == 1 else "update"
         nodes = {it.get("node") for it in items}
         all_down = all(it["kind"] == "service_down" for it in items) and len(nodes) == 1 and None not in nodes
@@ -192,4 +238,5 @@ class AlertEngine:
             title = f"{n} problems resolved on {lab}"
         else:
             title = f"{n} problems on {lab}"
-        return Notification(title, self._lines([f"• {line(it)}" for it in items]), severity, state, items, now)
+        return Notification(title, self._lines([f"• {line(it)}" + (f" ({it['note']})" if it.get("note") and it["state"] == "fire" else "")
+                                                for it in items]), severity, state, items, now)

@@ -46,6 +46,9 @@ def ntfy_request(n, cfg, url):
             body = f"{n.title}\n{body}"
     if cfg.get("token"):
         headers["Authorization"] = f"Bearer {cfg['token']}"
+    action = next((a for it in n.items for a in it.get("actions", ())), None)
+    if action:                                  # "Run fix" button (self-healing, ask-first mode)
+        headers["Actions"] = f"http, Run fix, {action['url']}, method=POST, clear=true"
     return f"{cfg['server'].rstrip('/')}/{cfg['topic']}", headers, body.encode()
 
 

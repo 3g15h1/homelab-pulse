@@ -5,9 +5,13 @@ discovery, checks and the UI run through exactly the code paths a live install u
 """
 import math
 import random
+import re
 import time
 
+from pathlib import Path
+
 import probes
+import recipes as recipes_mod
 from discover import Finding, Net
 from sources import SourceError
 
@@ -64,6 +68,7 @@ class DemoNet(Net):
         super().__init__()
         self.rng = random.Random(seed)
         self.clock = clock
+        self.healed_cycle = None      # the outage cycle a demo heal ended early
 
     def connect(self, ip, port):
         return any(f.port == port for f in SERVICES.get(ip, ()))
@@ -72,7 +77,9 @@ class DemoNet(Net):
         return next(f for f in SERVICES[ip] if f.port == port)
 
     def probe(self, spec):
-        if spec.get("id") == OUTAGE_CHECK and OUTAGE_FROM <= self.clock() % OUTAGE_CYCLE < OUTAGE_TO:
+        now = self.clock()
+        if (spec.get("id") == OUTAGE_CHECK and OUTAGE_FROM <= now % OUTAGE_CYCLE < OUTAGE_TO
+                and self.healed_cycle != now // OUTAGE_CYCLE):
             return probes.Result(False, None, "timed out")
         lat = round(self.rng.uniform(0.4, 4.0) if spec.get("target") != "internet" else self.rng.uniform(9, 16), 1)
         detail = {"dns": "blocking ads", "tls": "cert 61 days left", "tcp": f"port {spec.get('port')} open"}
@@ -261,3 +268,56 @@ class DemoPve:
             {"upid": "UPID:pve2:demo:3", "type": "vzshutdown", "id": "203", "user": "root@pam", "node": "pve2",
              "starttime": int(start - 86400 * 4), "endtime": int(start - 86400 * 4 + 6), "status": "OK"},
         ]
+
+
+# ---------------------------------------------------------------- self-healing stand-in
+
+DEMO_CONTAINERS = {(105, 9443): "portainer", (105, 3001): "uptime-kuma"}
+RECIPES_DIR = Path(__file__).resolve().parent.parent / "recipes"
+
+
+class DemoGate:
+    """Behaves like pulse-heal-gate for the demo lab: real recipe files and validation, fake guests.
+    A real (not dry) run on the demo outage check ends that outage, so healing can be watched."""
+
+    def __init__(self, net, recipes_dir=RECIPES_DIR):
+        self.net, self.dir, self.calls = net, Path(recipes_dir), []
+
+    def _recipes(self):
+        return recipes_mod.load_dir(self.dir, "built-in")
+
+    def version(self):
+        return {"ok": True, "version": "demo", "schema": recipes_mod.SCHEMA_VERSION, "enabled": True, "budget_per_hour": 10}
+
+    def list_recipes(self):
+        return {"ok": True, "recipes": self._recipes()}
+
+    def inspect(self, vmid, port):
+        g = GUESTS.get(int(vmid))
+        if not g:
+            return {"ok": False, "error": f"no such guest {vmid}"}
+        container = DEMO_CONTAINERS.get((int(vmid), int(port)))
+        f = next((f for f in SERVICES.get(g[8], ()) if f.port == int(port)), None)
+        systemd = g[1] == "lxc" or g[10] is True          # containers, and VMs with the guest agent
+        unit = None
+        if f and systemd and not container:
+            unit = re.sub(r"[^a-z0-9]+", "-", f.product.lower()).strip("-") + ".service"
+        return {"ok": True, "vmid": int(vmid), "port": int(port), "init": "systemd" if systemd else "none",
+                "unit": unit, "container": container, "pid": 1234}
+
+    def run(self, recipe_id, vmid, port, target=None, dry_run=False, timeout=None):
+        rec = next((r for r in self._recipes() if r["id"] == recipe_id), None)
+        if not rec or rec.get("errors"):
+            return {"ok": False, "error": "unknown recipe"}
+        t = dict(target or {}, port=int(port) or None)          # 0 = no port (warning fixes)
+        t.setdefault("init", "systemd")
+        try:
+            steps = recipes_mod.resolve(rec, t)
+        except recipes_mod.RecipeError as e:
+            return {"ok": False, "error": str(e)}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "steps": [{"argv": s, "dry_run": True} for s in steps]}
+        self.calls.append((recipe_id, int(vmid), int(port), steps))
+        if f"{vmid}:{port}" == OUTAGE_CHECK:
+            self.net.healed_cycle = self.net.clock() // OUTAGE_CYCLE
+        return {"ok": True, "steps": [{"argv": s, "exit": 0} for s in steps], "output": "ok"}

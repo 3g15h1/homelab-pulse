@@ -114,6 +114,33 @@ class InstallDryRunTests(unittest.TestCase):
         r = self.run_install("--show-password", env_extra={"TAGGED": "1", "ADMINPW": "1"})
         self.assertIn("old-pass-1234", r.stdout)
 
+    def test_enable_heal_plan(self):
+        r = self.run_install("--enable-heal", env_extra={"TAGGED": "1", "ADMINPW": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        out = r.stdout
+        for part in ("/heal/pulse-heal-gate /usr/local/sbin/pulse-heal-gate",
+                     "/pulse/recipes.py /usr/local/lib/pulse-heal/recipes.py",
+                     "/usr/share/pulse-heal/recipes",
+                     "/etc/pulse-heal/recipes.d",
+                     "ssh-keygen",
+                     'restrict,command="/usr/local/sbin/pulse-heal-gate",from="',
+                     "pulse-heal-ct110",
+                     "PULSE_HEAL_GATE=root@192.168.0.50"):
+            self.assertIn(part, out, part)
+        self.assertIn("Self-healing: installed in dry-run mode", out)
+
+    def test_disable_heal_plan(self):
+        r = self.run_install("--disable-heal", env_extra={"TAGGED": "1", "ADMINPW": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("remove pulse-heal-ct110 from /root/.ssh/authorized_keys", r.stdout)
+        self.assertIn("rm -f /usr/local/sbin/pulse-heal-gate", r.stdout)
+        self.assertIn("PULSE_HEAL_GATE", r.stdout)                      # removed from the env file
+        self.assertNotIn("ssh-keygen", r.stdout)
+
+    def test_enable_and_disable_conflict(self):
+        r = self.run_install("--enable-heal", "--disable-heal")
+        self.assertNotEqual(r.returncode, 0)
+
     def test_help(self):
         r = subprocess.run(["bash", str(ROOT / "install.sh"), "--help"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0)

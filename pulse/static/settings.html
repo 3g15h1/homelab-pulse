@@ -59,6 +59,21 @@
   .sticky { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); padding: 18px 0 6px; display: flex; align-items: center; }
   code { font-size: 12px; color: var(--text); }
   #login { max-width: 380px; margin: 60px auto; }
+  .modes { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin: 6px 0 12px; }
+  .modes label { margin: 0; border: 1px solid var(--line2); border-radius: 12px; padding: 10px 12px; cursor: pointer; background: var(--card2); }
+  .modes label:has(input:checked) { border-color: rgba(165,180,252,.6); }
+  .modes b { display: block; font-weight: 600; } .modes small { color: var(--dim); }
+  .modes input { display: none; }
+  .badge { font-size: 11px; border: 1px solid var(--line2); border-radius: 999px; padding: 1px 7px; color: var(--dim); white-space: nowrap; }
+  .badge.err { color: var(--bad); border-color: rgba(248,113,113,.35); } .badge.ok { color: var(--ok); }
+  .recipe { border-top: 1px solid var(--line); padding: 10px 0; }
+  .recipe:first-child { border-top: 0; }
+  .recipe .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .recipe .head b { flex: 1; min-width: 160px; }
+  .recipe select { width: auto; padding: 4px 8px; }
+  details summary { cursor: pointer; color: var(--dim); font-size: 12.5px; margin-top: 4px; }
+  pre { background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 12px;
+        white-space: pre-wrap; word-break: break-all; margin: 6px 0; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -109,6 +124,29 @@
       <label><span>Access token (optional)</span><input type="password" id="nt_token" autocomplete="off" placeholder="tk_…"></label>
       <div class="check"><input type="checkbox" id="nt_insecure"><label for="nt_insecure">Accept a self-signed certificate</label></div>
       <button data-test="ntfy">Save &amp; send test</button><span class="msg" id="msg_ntfy"></span>
+    </section>
+
+    <section class="card" id="healCard">
+      <h2>Self-healing</h2>
+      <p class="muted small">When a check fails, Pulse can try a first-response fix before alerting you: restart the service or
+        Docker container behind it, or run a recipe. Fixes run through the gate on your Proxmox host, which only runs
+        recipes defined there. <a href="https://github.com/3g15h1/homelab-pulse/blob/main/docs/recipes.md" style="color:var(--accent)">How recipes work</a></p>
+      <div id="gateStatus" class="small" style="margin-bottom:10px"></div>
+      <div class="modes" id="healModes">
+        <label><input type="radio" name="hmode" value="off"><b>Off</b><small>Never run fixes.</small></label>
+        <label><input type="radio" name="hmode" value="dry_run"><b>Dry run</b><small>Log what would run; change nothing.</small></label>
+        <label><input type="radio" name="hmode" value="ask"><b>Ask first</b><small>Alerts get a "Run fix" button.</small></label>
+        <label><input type="radio" name="hmode" value="auto"><b>Automatic</b><small>Run fixes, then tell you how it went.</small></label>
+      </div>
+      <div id="healAsks"></div>
+      <h3>Recipes</h3>
+      <div id="healRecipes" class="muted small">Loading…</div>
+      <button id="healSave" style="margin-top:10px">Save self-healing</button><span class="msg" id="healMsg"></span>
+      <h3 style="margin-top:20px">What each check would restart</h3>
+      <p class="muted small">Learned automatically while the check is healthy. Override if Pulse picked the wrong thing, or turn healing off for a check.</p>
+      <div class="list" id="healTargets"></div>
+      <h3 style="margin-top:20px">Recent fixes</h3>
+      <div class="list" id="healHistory"><span class="muted">None yet.</span></div>
     </section>
 
     <section class="card">
@@ -314,6 +352,76 @@ $("pwForm").onsubmit = async (e) => {
   else msg("pwMsg", r.data.error || "Not changed", false);
 };
 
+/* ---------- self-healing ---------- */
+let HEAL = null;
+const SRC = { "built-in": "built-in", "local": "yours", "local override": "yours (overrides built-in)" };
+function argvText(r) {
+  const d = r.do || {};
+  if (d.restart === "unit") return "systemctl restart <the service that owns the check's port>";
+  if (d.restart === "container") return "docker restart <the container that publishes the check's port>";
+  return (d.exec || []).map((a) => a.map((x) => /\s/.test(x) ? JSON.stringify(x) : x).join(" ")).join("\n");
+}
+async function loadHeal() {
+  const r = await api("GET", "/api/heal"); if (!r.ok) return;
+  HEAL = r.data;
+  const g = HEAL.gate;
+  $("gateStatus").innerHTML = g.ok
+    ? `<span class="badge ok">gate connected</span> <span class="muted">version ${esc(g.version)} · ${g.enabled ? "enabled on the host" : "<b style='color:var(--warn)'>switched off on the host</b> (/etc/pulse-heal/enabled)"} · budget ${esc(g.budget_per_hour)} fixes/hour</span>`
+    : `<span class="badge err">no gate</span> <span class="muted">${esc(g.error || "")}</span>`;
+  document.querySelectorAll('input[name="hmode"]').forEach((i) => { i.checked = i.value === HEAL.mode; i.disabled = !g.ok && i.value !== "off"; });
+  $("healAsks").innerHTML = HEAL.asks.length ? `<h3>Waiting for your OK</h3><div class="list">${HEAL.asks.map((a) =>
+    `<div class="it"><i class="dot warning"></i><span>${esc(a.check_id)} · ${esc(a.recipe)}</span><button data-ask="${esc(a.check_id)}" data-recipe="${esc(a.recipe_id)}">Run fix</button></div>`).join("")}</div>` : "";
+  $("healAsks").querySelectorAll("[data-ask]").forEach((b) => b.onclick = async () => {
+    b.disabled = true; const r = await api("POST", "/api/heal/run", { recipe_id: b.dataset.recipe, check_id: b.dataset.ask });
+    b.textContent = r.ok && r.data.ok ? "Done ✓" : `Failed: ${r.data.error || r.status}`; loadHeal();
+  });
+  $("healRecipes").className = "";
+  $("healRecipes").innerHTML = HEAL.recipes.length ? HEAL.recipes.map((x) => `<div class="recipe">
+    <div class="head"><b>${esc(x.name)}</b><span class="badge">${esc(SRC[x.source] || x.source)}</span>
+      ${x.errors && x.errors.length ? `<span class="badge err">can't run</span>` : `<span class="badge">${x.matches.length} check${x.matches.length === 1 ? "" : "s"}</span>`}
+      <select data-rmode="${esc(x.id)}" ${x.errors && x.errors.length ? "disabled" : ""}>${["default", "auto", "ask", "off"].map((m) =>
+        `<option value="${m}" ${x.mode === m ? "selected" : ""}>${m === "default" ? `default (${esc((x.safety || {}).default_mode || "auto")})` : m}</option>`).join("")}</select></div>
+    ${x.errors && x.errors.length ? `<div class="small" style="color:var(--bad)">${x.errors.map(esc).join("<br>")}</div>` : ""}
+    <details><summary>Details${x.matches.length ? " · test" : ""}</summary>
+      <div class="muted small">${esc(x.description || "")}</div>
+      <pre>${esc(argvText(x))}</pre>
+      <div class="muted small">When: ${esc(JSON.stringify(x.when || {}))} · max ${esc((x.safety || {}).max_per_hour)}/hour · waits ${esc((x.safety || {}).verify_s)} s for recovery</div>
+      ${x.matches.length ? `<div class="row" style="margin-top:6px"><label><span>Test on (dry run)</span><select data-tcheck="${esc(x.id)}">${x.matches.map((m) => `<option>${esc(m)}</option>`).join("")}</select></label>
+        <button data-test-recipe="${esc(x.id)}" style="flex:0 0 auto">Test</button></div><pre data-tout="${esc(x.id)}" hidden></pre>` : ""}
+    </details></div>`).join("") : '<span class="muted">No recipes available.</span>';
+  $("healRecipes").querySelectorAll("[data-test-recipe]").forEach((b) => b.onclick = async () => {
+    const id = b.dataset.testRecipe, check = document.querySelector(`[data-tcheck="${id}"]`).value, out = document.querySelector(`[data-tout="${id}"]`);
+    const r = await api("POST", "/api/heal/test", { recipe_id: id, check_id: check });
+    out.hidden = false;
+    out.textContent = r.data.ok ? "Would run:\n" + r.data.steps.map((s) => s.argv.join(" ")).join("\n") : `Refused: ${r.data.error || r.status}`;
+  });
+  $("healTargets").innerHTML = HEAL.targets.length ? HEAL.targets.map((t) => {
+    const ov = t.override || {}, learned = t.container ? `container ${t.container}` : t.unit || "nothing learned yet";
+    return `<div class="it"><span>${esc(t.name)}${t.guest ? " on " + esc(t.guest) : ""} <span class="faint">${esc(t.check_id)}</span>
+      <div class="muted small">${ov.skip ? "healing off for this check" : ov.unit ? "override: " + esc(ov.unit) : ov.container ? "override: container " + esc(ov.container) : "learned: " + esc(learned)}</div></span>
+      <button class="link" data-ovr="${esc(t.check_id)}">Change</button></div>`;
+  }).join("") : '<span class="muted">No checks yet.</span>';
+  $("healTargets").querySelectorAll("[data-ovr]").forEach((b) => b.onclick = async () => {
+    const v = prompt("Service (e.g. myapp.service), container:<name>, 'off' to never heal this check, or empty to go back to the learned value", "");
+    if (v === null) return;
+    const body = v.trim() === "" ? null : v.trim() === "off" ? { skip: true } : v.startsWith("container:") ? { container: v.slice(10).trim() } : { unit: v.trim() };
+    const r = await api("PUT", `/api/heal/override/${encodeURIComponent(b.dataset.ovr)}`, body);
+    if (!r.ok) alert(r.data.error || "Not saved"); loadHeal();
+  });
+  $("healHistory").innerHTML = HEAL.history.length ? HEAL.history.slice(0, 20).map((h) => `<div class="it">
+    <i class="dot ${h.recovered ? "ok" : h.ok === false || h.recovered === false ? "critical" : ""}"></i>
+    <span>${esc(h.detail)}<div class="muted small">${esc(h.check_id)} · ${esc(h.recipe_id)} · ${esc(h.mode.replace("_", " "))}</div></span>
+    <span class="faint small">${ago(h.ts)}</span></div>`).join("") : '<span class="muted">None yet.</span>';
+}
+$("healSave").onclick = async () => {
+  const mode = (document.querySelector('input[name="hmode"]:checked') || {}).value || "off";
+  const recs = {};
+  document.querySelectorAll("[data-rmode]").forEach((s) => { if (s.value !== "default") recs[s.dataset.rmode] = s.value; });
+  const r = await api("PUT", "/api/heal/settings", { mode, recipes: recs });
+  msg("healMsg", r.ok ? "Saved." : `Not saved: ${r.data.error || r.status}`, r.ok);
+  if (r.ok) loadHeal();
+};
+
 /* ---------- start ---------- */
 async function start() {
   const s = await (await fetch("/api/session")).json();
@@ -322,10 +430,10 @@ async function start() {
   if (!s.signed_in) { showLogin(); return; }
   const r = await api("GET", "/api/settings"); if (!r.ok) return;
   $("login").hidden = true; $("app").hidden = false; $("signout").hidden = false;
-  fill(r.data.settings); loadState(); loadMutes(); loadDeliveries();
+  fill(r.data.settings); loadState(); loadMutes(); loadDeliveries(); loadHeal();
 }
 start();
-setInterval(() => { if (!$("app").hidden) { loadState(); loadDeliveries(); } }, 30000);
+setInterval(() => { if (!$("app").hidden) { loadState(); loadDeliveries(); loadHeal(); } }, 30000);
 </script>
 </body>
 </html>

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "id": "ct-disk-cleanup",
+  "name": "Free space in a nearly full container",
+  "description": "Shrinks the systemd journal to 200 MB and clears the apt package cache. Debian/Ubuntu containers; deletes no data, only logs older than the newest 200 MB and downloaded .deb files.",
+  "when": {"alert": "warning", "rule": "ct_disk"},
+  "do": {"exec": [["journalctl", "--vacuum-size=200M"], ["apt-get", "clean"]]},
+  "guest": ["lxc"],
+  "safety": {"max_per_hour": 1, "verify_s": 300, "default_mode": "ask"}
+}

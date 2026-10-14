@@ -34,7 +34,7 @@ class StoreTests(unittest.TestCase):
         tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
         self.assertLessEqual({"check_results", "check_hourly", "events", "alerts", "mutes", "settings",
                               "deliveries"}, tables)
-        self.assertEqual(con.execute("pragma user_version").fetchone()[0], 1)
+        self.assertEqual(con.execute("pragma user_version").fetchone()[0], 2)
         self.assertIsNone(self.s.error)
 
     def test_uptime_raw_and_hourly(self):
@@ -134,3 +134,43 @@ class StoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HealStoreTests(unittest.TestCase):
+    def test_migration_from_v1_keeps_data(self):
+        path = tmpdb()
+        con = sqlite3.connect(path)
+        con.executescript(store.SCHEMA)
+        con.execute("pragma user_version = 1")
+        con.execute("insert into settings values (?, ?)", ("config", '{"a": 1}'))
+        con.commit()
+        con.close()
+        s = store.Store(path)
+        self.assertEqual(s.get("config"), {"a": 1})
+        self.assertEqual(sqlite3.connect(path).execute("pragma user_version").fetchone()[0], 2)
+        self.assertIsNone(s.get_target("101:80"))
+
+    def test_targets_and_overrides(self):
+        s = store.Store(":memory:")
+        s.put_target("101:80", vmid=101, port=80, init="systemd", unit="AdGuardHome.service", container=None, learned_ts=5)
+        t = s.get_target("101:80")
+        self.assertEqual((t["unit"], t["init"], t["override"]), ("AdGuardHome.service", "systemd", None))
+        s.set_override("101:80", {"unit": "other.service"})
+        s.put_target("101:80", vmid=101, port=80, init="systemd", unit="AdGuardHome.service", container=None, learned_ts=9)
+        t = s.get_target("101:80")
+        self.assertEqual((t["override"], t["learned_ts"]), ({"unit": "other.service"}, 9))      # override survives relearning
+        s.set_override("101:80", None)
+        self.assertIsNone(s.get_target("101:80")["override"])
+        s.set_override("102:8000", {"skip": True})                                                # override before learning
+        self.assertEqual(s.get_target("102:8000")["override"], {"skip": True})
+
+    def test_heal_runs_retention(self):
+        clock = Clock()
+        s = store.Store(":memory:", clock=clock)
+        s.add_heal_run(NOW - 91 * D, "101:80", 101, "generic-unit", "auto", True, True, "old")
+        s.add_heal_run(NOW - 10, "101:80", 101, "generic-unit", "auto", True, False, "restarted, still down")
+        self.assertEqual([r["detail"] for r in s.heal_runs()], ["restarted, still down", "old"])
+        s.compact(NOW)
+        runs = s.heal_runs()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual((runs[0]["ok"], runs[0]["recovered"], runs[0]["recipe_id"]), (True, False, "generic-unit"))

@@ -35,6 +35,14 @@ create table if not exists deliveries (ts real not null, channel text, ok intege
                                        title text);
 """
 
+SCHEMA_V2 = """
+create table if not exists heal_targets (check_id text primary key, vmid integer, port integer, init text, unit text,
+                                         container text, override_json text, learned_ts real);
+create table if not exists heal_runs (ts real not null, check_id text, vmid integer, recipe_id text, mode text,
+                                      ok integer, recovered integer, detail text);
+"""
+HEAL_RUNS_KEEP_S = 90 * D
+
 
 class Store:
     def __init__(self, path, clock=time.time):
@@ -101,9 +109,13 @@ class Store:
 
     @staticmethod
     def _migrate(con):
-        if con.execute("pragma user_version").fetchone()[0] < 1:
+        version = con.execute("pragma user_version").fetchone()[0]
+        if version < 1:
             con.executescript(SCHEMA)
-            con.execute("pragma user_version = 1")
+        if version < 2:                  # 1.2: self-healing
+            con.executescript(SCHEMA_V2)
+        if version < 2:
+            con.execute("pragma user_version = 2")
 
     # -- health-check results --
 
@@ -147,6 +159,7 @@ class Store:
         self._x("delete from events where ts < ?", (now - EVENTS_KEEP_S,))
         self._x("delete from deliveries where rowid not in (select rowid from deliveries order by ts desc limit ?)",
                 (DELIVERIES_KEEP,))
+        self._x("delete from heal_runs where ts < ?", (now - HEAL_RUNS_KEEP_S,))
 
     # -- activity feed --
 
@@ -209,4 +222,38 @@ class Store:
     def deliveries(self, limit=50):
         return [{"ts": r[0], "channel": r[1], "ok": bool(r[2]), "status": r[3], "error": r[4], "title": r[5]}
                 for r in self._x("select ts, channel, ok, status, error, title from deliveries "
+                                 "order by ts desc limit ?", (limit,))]
+
+    # -- self-healing: what owns each check's port, and what was done --
+
+    def get_target(self, check_id):
+        rows = self._x("select vmid, port, init, unit, container, override_json, learned_ts from heal_targets "
+                       "where check_id = ?", (check_id,))
+        if not rows:
+            return None
+        v, p, i, u, c, o, t = rows[0]
+        return {"check_id": check_id, "vmid": v, "port": p, "init": i, "unit": u, "container": c,
+                "override": json.loads(o) if o else None, "learned_ts": t}
+
+    def put_target(self, check_id, vmid, port, init, unit, container, learned_ts):
+        self._x("insert into heal_targets (check_id, vmid, port, init, unit, container, learned_ts) values "
+                "(?, ?, ?, ?, ?, ?, ?) on conflict (check_id) do update set vmid = excluded.vmid, port = excluded.port, "
+                "init = excluded.init, unit = excluded.unit, container = excluded.container, "
+                "learned_ts = excluded.learned_ts", (check_id, vmid, port, init, unit, container, learned_ts))
+
+    def set_override(self, check_id, override):
+        self._x("insert into heal_targets (check_id, override_json) values (?, ?) on conflict (check_id) do update "
+                "set override_json = excluded.override_json",
+                (check_id, json.dumps(override) if override is not None else None))
+
+    def add_heal_run(self, ts, check_id, vmid, recipe_id, mode, ok, recovered, detail):
+        self._x("insert into heal_runs values (?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, check_id, vmid, recipe_id, mode, None if ok is None else int(bool(ok)),
+                 None if recovered is None else int(bool(recovered)), detail))
+
+    def heal_runs(self, limit=50):
+        return [{"ts": r[0], "check_id": r[1], "vmid": r[2], "recipe_id": r[3], "mode": r[4],
+                 "ok": None if r[5] is None else bool(r[5]), "recovered": None if r[6] is None else bool(r[6]),
+                 "detail": r[7]}
+                for r in self._x("select ts, check_id, vmid, recipe_id, mode, ok, recovered, detail from heal_runs "
                                  "order by ts desc limit ?", (limit,))]

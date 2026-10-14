@@ -89,3 +89,13 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(settings.load(s)["alerts"]["down_after_s"], 30)
         s.put("config", {"alerts": {"down_after_s": "junk"}})
         self.assertEqual(settings.load(s), settings.DEFAULTS)
+
+
+class HealSettingsTests(unittest.TestCase):
+    def test_heal_settings_validation(self):
+        self.assertEqual(settings.DEFAULTS["heal"], {"mode": "dry_run", "recipes": {}})
+        d = settings.validate({"heal": {"mode": "auto", "recipes": {"generic-unit": "ask", "ct-disk-cleanup": "off"}}})
+        self.assertEqual(d["heal"]["recipes"]["generic-unit"], "ask")
+        for bad in ({"mode": "yolo"}, {"recipes": {"Bad Id": "auto"}}, {"recipes": {"x-y": "sometimes"}}, {"recipes": []}):
+            with self.assertRaises(settings.SettingsError):
+                settings.validate({"heal": bad})

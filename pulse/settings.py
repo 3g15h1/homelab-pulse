@@ -28,6 +28,7 @@ DEFAULTS = {
         "node_memory": {"enabled": True, "pct": 90, "minutes": 15},
         "ct_disk": {"enabled": True, "warn_pct": 90, "crit_pct": 97},
     },
+    "heal": {"mode": "dry_run", "recipes": {}},
 }
 
 
@@ -45,6 +46,8 @@ URL = ("url",)
 TIME = ("time",)
 HEADERS = ("headers",)
 TOPIC = ("str", r"[A-Za-z0-9_-]{0,64}")
+HEAL_MODE = ("str", r"off|dry_run|ask|auto")
+RECIPE_MODES = ("recipe_modes",)
 SECRET = ("str", r"[^\r\n]{0,512}")
 BOOL = ("bool",)
 PCT = _int(1, 100)
@@ -70,6 +73,7 @@ SCHEMA = {
         "node_memory": {"enabled": BOOL, "pct": PCT, "minutes": _int(1, 1440)},
         "ct_disk": {"enabled": BOOL, "warn_pct": PCT, "crit_pct": PCT},
     },
+    "heal": {"mode": HEAL_MODE, "recipes": RECIPE_MODES},
 }
 
 
@@ -90,6 +94,12 @@ def _check(spec, value, path):
     elif kind == "time":
         if not isinstance(value, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
             raise SettingsError(path, "must be a time like 23:00")
+    elif kind == "recipe_modes":
+        if not isinstance(value, dict) or len(value) > 200:
+            raise SettingsError(path, "must map recipe ids to a mode")
+        for k, v in value.items():
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,63}", k) or v not in ("default", "auto", "ask", "off"):
+                raise SettingsError(f"{path}.{k}", "must be default, auto, ask or off")
     elif kind == "headers":
         if not isinstance(value, dict) or len(value) > 20:
             raise SettingsError(path, "must be a list of header names and values")

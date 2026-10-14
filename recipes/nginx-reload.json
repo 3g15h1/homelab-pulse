@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "nginx-reload",
+  "name": "Check and reload nginx",
+  "description": "Tests the nginx configuration and, only if it is valid, reloads nginx (no dropped connections).",
+  "when": {"alert": "service_down", "product": ["nginx"]},
+  "do": {"exec": [["nginx", "-t"], ["systemctl", "reload-or-restart", "nginx"]]},
+  "safety": {"max_per_hour": 2, "verify_s": 60, "default_mode": "auto"}
+}

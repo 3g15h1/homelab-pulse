@@ -15,6 +15,7 @@ import discover
 import early
 import overrides as overrides_mod
 import probes as probes_mod
+import recipes as recipes_mod
 import settings as settings_mod
 import store as store_mod
 
@@ -300,7 +301,7 @@ class Collector:
     STORAGE_HIST_EVERY = 1800
 
     def __init__(self, pve, pve_mode, net, probe_fn=probes_mod.run, overrides_path=None, ca_path=None,
-                 clock=time.time, store=None, notifier=None, settings_loader=None):
+                 clock=time.time, store=None, notifier=None, settings_loader=None, heal=None):
         self.pve, self.clock, self.probe_fn = pve, clock, probe_fn
         self.overrides_path, self.ca_path = overrides_path, ca_path
         self.ports = catalog.SCAN_PORTS
@@ -332,7 +333,8 @@ class Collector:
         self.store = store or store_mod.Store(":memory:", clock=clock)
         self.notifier = notifier
         self.settings_loader = settings_loader or (lambda: settings_mod.load(self.store))
-        self.engine = alerts_mod.AlertEngine(self.store.load_alerts(), started=clock())
+        self.heal = heal            # HealEngine, or None when no heal gate is set up
+        self.engine = alerts_mod.AlertEngine(self.store.load_alerts(), started=clock(), on_fire=self._on_fire)
         self._alert_lock = threading.Lock()     # engine state is touched by the alert loop and "Clear" requests
         self.events_log = deque(reversed(self.store.recent_events(50)), maxlen=50)   # oldest first
         self.stopped = {}           # vmid -> when it was seen going from running to stopped
@@ -345,6 +347,7 @@ class Collector:
         self.sources["store"] = {"mode": "memory" if self.store.path == ":memory:" else "sqlite",
                                  "ok": self.store.error is None, "error": self.store.error, "updated": None}
         self.sources["alerts"] = {"mode": "off", "ok": None, "error": None, "updated": None}
+        self.sources["heal"] = {"mode": "off", "ok": None, "error": None, "updated": None}
 
     # -- polling steps (each callable directly from tests) --
 
@@ -477,6 +480,10 @@ class Collector:
             self._ok("discovery", now)
             if self.ov_error:
                 self.sources["discovery"].update(ok=False, error=self.ov_error)
+        if full and self.heal:                  # after the checks are published: this takes a while over SSH
+            self.heal.learn([{"check_id": f"{g['vmid']}:{f.port}", "vmid": g["vmid"], "port": f.port,
+                              "running": g["running"]}
+                             for g in guests for f in self.discoverer.services(g["vmid"])])
 
     def poll_probes(self, pool=None):
         with self.cond:
@@ -510,14 +517,39 @@ class Collector:
         conds = build_conditions(snap, dict(self.stopped), self.tasks_raw, now)
         conds += early.evaluate(snap, self.storage_hist, cfg["warnings"], self.early_state, now)
         mutes = self.store.list_mutes(now)
+        self._heal_cfg = cfg.get("heal", {"mode": "off"})
+        heal_events = []
         with self._alert_lock:
+            if self.heal:
+                up = {sid: st.up for sid, st in self.checks.items()}
+                present = {c["key"] for c in conds}
+                for o in self.heal.poll(now, lambda cid: up.get(cid) is True or (cid.startswith("warn:") and cid not in present)):
+                    if o.kind == "healed":
+                        self.engine.healed(o.cond_key, o.text)
+                    elif o.kind == "failed":
+                        self.engine.annotate(o.cond_key, o.text)
+                        heal_events.append({"ts": now, "kind": "heal", "level": "warn", "text": f"Fix didn't help: {o.text}"})
+                    else:
+                        heal_events.append({"ts": now, "kind": "heal", "level": "info", "text": f"Dry run: {o.text}"})
             notes = self.engine.process(conds, now, cfg["alerts"], mutes, self.lab_name)
+            if self.heal:
+                for key in self.engine.recovered:
+                    self.heal.forget_check(key[len("check:"):] if key.startswith("check:") else key)
             engine_events = list(self.engine.events)
             states = {k: dict(v) if isinstance(v, dict) else v for k, v in self.engine.states.items()}
             self.store.save_alerts(self.engine.states)
         for m in mutes:                             # "until it recovers" mutes end with their problem
             if m["until_recovered"] and not any(alerts_mod.AlertEngine._muted(c["key"], c, [m]) for c in conds):
                 self.store.remove_mute(m["target"])
+        if self.heal and self.notifier:         # offer "Run fix" on alerts waiting for approval
+            base = getattr(self.notifier, "public_url", "/")
+            for n in notes:
+                for it in n.items:
+                    cid = it["key"][len("check:"):] if it["key"].startswith("check:") else it["key"]
+                    tok = self.heal.pending_token(cid)
+                    if tok and it["state"] in ("fire", "repeat"):
+                        name = self.heal.asked_recipe_name(cid)
+                        it["actions"] = [{"id": tok, "title": f"Run fix: {name}", "url": f"{base.rstrip('/')}/api/heal/run/{tok}"}]
         if self.notifier:
             for n in notes:
                 self.notifier.enqueue(n, cfg["notify"])
@@ -534,8 +566,12 @@ class Collector:
                               "muted": alerts_mod.AlertEngine._muted(c["key"], c, mutes)})
         attention.sort(key=lambda a: (-alerts_mod.RANK[a["severity"]], a["muted"], a["title"]))
         with self.cond:
-            for ev in engine_events:
+            for ev in engine_events + heal_events:
                 self._add_event(ev)
+            hc = getattr(self, "_heal_cfg", {"mode": "off"})
+            self.sources["heal"].update(mode=hc.get("mode", "off") if self.heal else "off", updated=now,
+                                        ok=None if not self.heal else self.heal.gate_error is None,
+                                        error=self.heal.gate_error if self.heal else None)
             self.attention = attention
             self.sources["alerts"].update(mode="+".join(channels) or "off", updated=now,
                                           ok=None if not last else last["ok"],
@@ -543,6 +579,88 @@ class Collector:
             self.sources["store"].update(ok=self.store.error is None, error=self.store.error, updated=now)
             self.version += 1
             self.cond.notify_all()
+
+    def _on_fire(self, key, cond, now):
+        """Alert engine hook: a condition just started firing. Try a first-response fix; return how
+        long to hold the notification while it runs (None = send now)."""
+        if not self.heal:
+            return None
+        cfg = getattr(self, "_heal_cfg", None) or self.settings_loader().get("heal", {"mode": "off"})
+        tgt = cond.get("target")
+        guest = next((g for g in self.guests if g["vmid"] == tgt), None) if isinstance(tgt, int) else None
+        if not guest:
+            return None
+        check = None
+        if cond["kind"] == "service_down":
+            st = self.checks.get(key[len("check:"):])
+            if not st:
+                return None
+            check = {"id": st.spec["id"], "product": st.spec.get("product"), "port": st.spec.get("port")}
+        node = next((n for n in self.nodes if n["name"] == guest["node"]), {})
+        ctx = {"running": guest["running"], "node_online": node.get("online", False),
+               "api_ok": self.sources["pve"]["ok"] is not False, "muted": False}
+        g = {"vmid": guest["vmid"], "type": guest["type"], "tags": guest.get("tags", []), "running": guest["running"]}
+        try:
+            d = self.heal.decide(cond, check, g, cfg, ctx)
+            return self.heal.start(d, now) if d else None
+        except Exception as e:  # noqa: BLE001 - a healing bug must never swallow an alert
+            log.warning("self-healing: %s", e)
+            return None
+
+    def heal_overview(self):
+        """For the settings page: mode, gate state, recipes (with the checks each would handle now)
+        and recent runs. Admin-only."""
+        cfg = self.settings_loader().get("heal", {"mode": "off", "recipes": {}})
+        if not self.heal:
+            return {"mode": "off", "gate": {"ok": False, "error": "no heal gate installed (install.sh --enable-heal)"},
+                    "recipes": [], "history": [], "asks": []}
+        try:
+            version = self.heal.gate.version()
+        except Exception as e:  # noqa: BLE001
+            version = {"ok": False, "error": str(e)}
+        guests = {g["vmid"]: g for g in self.guests}
+        targets = []
+        for st in list(self.checks.values()):
+            if isinstance(st.spec.get("target"), int) and st.spec.get("port"):
+                t = self.store.get_target(st.spec["id"]) or {}
+                targets.append({"check_id": st.spec["id"], "name": st.spec["name"], "guest": st.spec.get("guest"),
+                                "unit": t.get("unit"), "container": t.get("container"), "override": t.get("override")})
+        recs = []
+        for r in self.heal.recipes():
+            matches = []
+            for st in list(self.checks.values()):
+                g = guests.get(st.spec.get("target")) if isinstance(st.spec.get("target"), int) else None
+                if not g or r.get("errors"):
+                    continue
+                cond = {"key": f"check:{st.spec['id']}", "kind": "service_down"}
+                check = {"id": st.spec["id"], "product": st.spec.get("product"), "port": st.spec.get("port")}
+                guest = {"vmid": g["vmid"], "type": g["type"], "tags": g.get("tags", [])}
+                if recipes_mod.matches(r, cond, check, guest):
+                    tgt = self.heal.target_for(st.spec["id"]) or {}
+                    kind = r.get("do", {}).get("restart")
+                    if (kind == "unit" and not tgt.get("unit")) or (kind == "container" and not tgt.get("container")):
+                        continue
+                    matches.append(st.spec["id"])
+            recs.append(dict(r, matches=matches, mode=cfg.get("recipes", {}).get(r["id"], "default")))
+        return {"mode": cfg.get("mode", "off"),
+                "gate": {"ok": bool(version.get("ok")) and self.heal.gate_error is None,
+                         "error": version.get("error") or self.heal.gate_error,
+                         "version": version.get("version"), "enabled": version.get("enabled"),
+                         "budget_per_hour": version.get("budget_per_hour")},
+                "recipes": recs, "history": self.store.heal_runs(50),
+                "asks": [{"check_id": cid, "recipe": self.heal.asked_recipe_name(cid),
+                          "recipe_id": self.heal.asked_recipe_id(cid)} for cid in sorted(self.heal.asks)],
+                "targets": targets}
+
+    def heal_decision(self, recipe_id, check_id, mode):
+        """A Decision for a manual run or dry-run test from the settings page."""
+        import heal as heal_mod
+        r = next((r for r in self.heal.recipes() if r["id"] == recipe_id), None)
+        st = self.checks.get(check_id)
+        if not r or not st or not isinstance(st.spec.get("target"), int):
+            return None
+        target = self.heal.target_for(check_id) or {}
+        return heal_mod.Decision(r, mode, check_id, f"check:{check_id}", st.spec["target"], st.spec.get("port"), target)
 
     def clear_alert(self, key):
         m = re.fullmatch(r"guest:(\d+):stopped", key)
@@ -760,4 +878,6 @@ class Collector:
                 "probes": [st.view(paused=not running.get(st.spec.get("target"), True)) for st in self.checks.values()],
                 "events": events,
                 "attention": list(self.attention),
+                "heal": {"mode": self.sources["heal"]["mode"],
+                         "asks": sorted(self.heal.asks) if self.heal else []},
             }
