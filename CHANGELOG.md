@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.0 — 2026-10-14
+
+- **Expanded alerting.** New alert kinds: Internet unreachable, gateway not answering, and lab DNS
+  not resolving (new built-in ping/DNS probes, so an ISP outage no longer looks like every service
+  dying at once); guest flapping (3 unexplained restarts in an hour → one summary); new service
+  appeared (new open port); guest IP changed. New early warnings: ZFS pool health, backup-storage
+  fill forecasting (separate thresholds from regular storage), and opt-in Proxmox update checks
+  (`install.sh --with-updates` grants the token `Sys.Modify` for this; default token unchanged).
+  HTTP checks can now require a page keyword via `overrides.json` (`http_contains`).
+- **Dependency suppression:** when a node goes offline, its guests' and services' alerts are held
+  (not dropped, not sent) until the node recovers — one message per incident.
+- **Internet down:** ntfy is skipped while the internet is unreachable (it can't deliver); the alert
+  notes this and the local webhook still fires.
+- Docs: `docs/alerting.md` describes every check, its generic mechanism, and its setting.
+
 ## 1.2.2 — 2026-10-14
 
 - **Installable app (PWA):** PNG icons (180/192/512 px plus a maskable 512 px) generated from the Pulse
