@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO="3g15h1/homelab-pulse"
 REF="main"
-VMID="" STORAGE="" BRIDGE="vmbr0" IP="dhcp" GW="" SRC="" ROTATE=0 DRY=0 SHOW_PW=0 HEAL=""
+VMID="" STORAGE="" BRIDGE="vmbr0" IP="dhcp" GW="" SRC="" ROTATE=0 DRY=0 SHOW_PW=0 HEAL="" UPDATES=0
 APP=/opt/homelab-pulse
 ETC=/etc/homelab-pulse
 TAG=homelab-pulse
@@ -28,6 +28,7 @@ Usage: install.sh [options]
   --ref REF         git branch or tag to install (default: main)
   --src DIR         install from a local checkout instead of downloading
   --rotate-token    create a new API token even if the container already has one
+  --with-updates    also grant Sys.Modify (enables the Proxmox-update check)
   --show-password   print the existing admin password for the settings page
   --enable-heal     set up self-healing: the pulse-heal-gate on this host + a restricted SSH key for Pulse
   --disable-heal    remove self-healing (gate, key); keeps your recipes in /etc/pulse-heal/recipes.d
@@ -46,6 +47,7 @@ while [ $# -gt 0 ]; do
     --ref) REF=$2; shift 2 ;;
     --src) SRC=$2; shift 2 ;;
     --rotate-token) ROTATE=1; shift ;;
+    --with-updates) UPDATES=1; shift ;;
     --show-password) SHOW_PW=1; shift ;;
     --enable-heal) [ "$HEAL" = disable ] && { echo "Choose --enable-heal or --disable-heal" >&2; exit 2; }; HEAL=enable; shift ;;
     --disable-heal) [ "$HEAL" = enable ] && { echo "Choose --enable-heal or --disable-heal" >&2; exit 2; }; HEAL=disable; shift ;;
@@ -141,7 +143,14 @@ if [ "$DRY" = 0 ] && [ "$(pct status "$VMID" | awk '{print $2}')" != running ]; 
 # ------------------------------------------------------------------ read-only Proxmox user + token
 pveum user list --output-format json | json_get 'any(u["userid"] == "'$PVE_USER'" for u in d)' | grep -q True ||
   run pveum user add "$PVE_USER" --comment "Homelab Pulse (read-only dashboard)"
-run pveum acl modify / --users "$PVE_USER" --roles PVEAuditor
+PVE_ROLES="PVEAuditor"
+if [ "$UPDATES" = 1 ]; then
+  pveum role list --output-format json | json_get 'any(r["roleid"] == "PulseUpdates" for r in d)' | grep -q True ||
+    run pveum role add PulseUpdates --privs Sys.Modify
+  PVE_ROLES="PVEAuditor,PulseUpdates"
+  say "API token also gets Sys.Modify (enables the Proxmox update check)"
+fi
+run pveum acl modify / --users "$PVE_USER" --roles "$PVE_ROLES"
 
 in_ct "id pulse >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin pulse; install -d -m 750 -o root -g pulse $ETC"
 

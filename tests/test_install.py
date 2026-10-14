@@ -39,6 +39,8 @@ esac''',
 esac''',
     "pveum": r'''case "$1 $2" in
   "user list") echo '[{"userid":"root@pam"}]' ;;
+  "role list") echo '[]' ;;
+  "role add") echo "role-created" ;;
   *) echo "UNEXPECTED pveum $*" >&2; exit 99 ;;
 esac''',
 }
@@ -153,3 +155,22 @@ class InstallDryRunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallWithUpdatesTests(unittest.TestCase):
+    def run_install(self, *args):
+        return InstallDryRunTests().run_install(*args)
+
+    def test_with_updates_grants_sys_modify(self):
+        r = self.run_install("--with-updates")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("+ pveum role add PulseUpdates --privs Sys.Modify", r.stdout)
+        self.assertIn("--roles PVEAuditor,PulseUpdates", r.stdout)
+        self.assertNotIn("UNEXPECTED", r.stderr)
+
+    def test_default_install_no_sys_modify(self):
+        r = self.run_install()
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertNotIn("PulseUpdates", r.stdout)
+        self.assertNotIn("Sys.Modify", r.stdout)
+        self.assertIn("--roles PVEAuditor", r.stdout)
