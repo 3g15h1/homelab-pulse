@@ -99,3 +99,16 @@ class HealSettingsTests(unittest.TestCase):
         for bad in ({"mode": "yolo"}, {"recipes": {"Bad Id": "auto"}}, {"recipes": {"x-y": "sometimes"}}, {"recipes": []}):
             with self.assertRaises(settings.SettingsError):
                 settings.validate({"heal": bad})
+
+
+class NewAlertKindsTests(unittest.TestCase):
+    def test_net_kinds_default_on(self):
+        for k in ("net_down", "gateway_down", "dns_broken"):
+            self.assertTrue(settings.DEFAULTS["alerts"]["kinds"][k], k)
+
+    def test_new_kinds_validate(self):
+        d = settings.validate({"alerts": {"kinds": {"net_down": False}}})
+        self.assertFalse(d["alerts"]["kinds"]["net_down"])
+        self.assertTrue(d["alerts"]["kinds"]["gateway_down"])
+
+

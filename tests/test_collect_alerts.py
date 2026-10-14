@@ -67,12 +67,14 @@ class BuildConditionsTests(unittest.TestCase):
                               {"node": "pve2", "ok": True, "status": "OK"}]},
             sources={"pve": {"ok": False, "error": "PVE /cluster/resources: HTTP 401"}})
         c = {x["key"]: x for x in collect.build_conditions(s, {}, [], NOW)}
-        self.assertEqual(set(c), {"check:101:80", "check:node:home", "check:internet", "node:pve2", "source:pve",
+        self.assertEqual(set(c), {"check:101:80", "check:node:home", "net:internet", "node:pve2", "source:pve",
                                   "backup:home"})
         self.assertEqual(c["check:101:80"]["title"], "AdGuard Home on adguard is down")
         self.assertEqual((c["check:101:80"]["node"], c["check:101:80"]["target"]), ("home", 101))
         self.assertEqual(c["check:node:home"]["node"], "home")
-        self.assertIsNone(c["check:internet"]["node"])
+        self.assertIsNone(c["net:internet"]["node"])
+        self.assertEqual(c["net:internet"]["kind"], "net_down")
+        self.assertEqual(c["net:internet"]["title"], "Internet is unreachable")
         self.assertEqual(c["node:pve2"]["title"], "pve2 is offline")
         self.assertEqual(c["backup:home"]["title"], "Backup on home failed: job errors")
         self.assertEqual(c["source:pve"]["kind"], "api_down")

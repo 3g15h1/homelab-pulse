@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import collect
+import discover
 import demo
 import probes
 import sources
@@ -264,3 +265,59 @@ class BuilderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuiltinNetSpecsTests(unittest.TestCase):
+    def test_plan_checks_adds_gateway_and_dns(self):
+        specs = discover.plan_checks({}, [], {"ip": "192.168.0.1", "name": "Router"}, [], {}, None)
+        by_id = {s["id"]: s for s in specs}
+        self.assertEqual(by_id["gateway"]["kind"], "ping")
+        self.assertEqual(by_id["gateway"]["host"], "192.168.0.1")
+        self.assertEqual(by_id["gateway"]["target"], "gateway")
+        self.assertEqual(by_id["dns-lab"]["kind"], "resolve")
+        self.assertEqual(by_id["dns-lab"]["server"], "192.168.0.1")
+
+    def test_no_router_no_gateway_specs(self):
+        ids = {s["id"] for s in discover.plan_checks({}, [], None, [], {}, None)}
+        self.assertNotIn("gateway", ids)
+        self.assertNotIn("dns-lab", ids)
+
+    def test_internet_check_still_present(self):
+        ids = {s["id"] for s in discover.plan_checks({}, [], None, [], {}, None)}
+        self.assertIn("internet", ids)
+
+
+class NetConditionTests(unittest.TestCase):
+    def _snap(self, probes, router=None):
+        return {"probes": probes, "guests": [], "nodes": [], "router": router}
+
+    def test_internet_probe_becomes_net_down(self):
+        snap = self._snap([{"id": "internet", "name": "Internet", "up": False, "target": "internet"}])
+        conds = collect.build_conditions(snap, {}, [], 1000.0)
+        self.assertEqual([(c["kind"], c["key"]) for c in conds], [("net_down", "net:internet")])
+        self.assertEqual(conds[0]["severity"], "critical")
+        self.assertEqual(conds[0]["title"], "Internet is unreachable")
+
+    def test_gateway_probe_becomes_gateway_down(self):
+        snap = self._snap(
+            [{"id": "gateway", "name": "Gateway", "up": False, "target": "gateway"}],
+            router={"ip": "192.168.0.1", "name": "Router"})
+        conds = collect.build_conditions(snap, {}, [], 1000.0)
+        self.assertEqual(conds[0]["kind"], "gateway_down")
+        self.assertEqual(conds[0]["key"], "net:gateway")
+        self.assertIn("192.168.0.1", conds[0]["title"])
+        self.assertEqual(conds[0]["severity"], "critical")
+
+    def test_dns_probe_becomes_dns_broken(self):
+        snap = self._snap([{"id": "dns-lab", "name": "Lab DNS", "up": False, "target": "dns-lab"}])
+        conds = collect.build_conditions(snap, {}, [], 1000.0)
+        self.assertEqual(conds[0]["kind"], "dns_broken")
+        self.assertEqual(conds[0]["severity"], "warning")
+
+    def test_up_probes_no_conditions(self):
+        snap = self._snap([
+            {"id": "internet", "name": "Internet", "up": True, "target": "internet"},
+            {"id": "gateway", "name": "Gateway", "up": True, "target": "gateway"},
+            {"id": "dns-lab", "name": "Lab DNS", "up": True, "target": "dns-lab"},
+        ])
+        self.assertEqual(collect.build_conditions(snap, {}, [], 1000.0), [])

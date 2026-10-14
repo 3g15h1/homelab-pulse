@@ -379,6 +379,11 @@ def plan_checks(services, guests, router, nodes, ov, ca_path):
         checks.append({"id": "internet", "name": "Internet", "kind": "tcp", "host": inet.get("host", "1.1.1.1"),
                        "port": inet.get("port", 443), "target": "internet", "source": "builtin"})
     if router and router.get("ip"):
+        checks.append({"id": "gateway", "name": "Gateway", "kind": "ping",
+                       "host": router["ip"], "target": "gateway", "source": "builtin"})
+        checks.append({"id": "dns-lab", "name": "Lab DNS", "kind": "resolve",
+                       "server": router["ip"], "qname": "example.com",
+                       "target": "dns-lab", "source": "builtin"})
         for f in services.get("router", ()):
             checks.append(dict(check_for("router", router["ip"], f, router.get("name") or "Router"),
                                name=router.get("name") or "Router"))

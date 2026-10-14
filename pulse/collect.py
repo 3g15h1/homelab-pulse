@@ -257,6 +257,19 @@ def build_conditions(snap, stopped, tasks, now):
     for p in snap.get("probes", []):
         if p.get("up") is not False or p.get("paused"):
             continue
+        if p.get("id") == "internet":
+            out.append({"key": "net:internet", "kind": "net_down", "severity": "critical",
+                        "title": "Internet is unreachable", "target": "internet", "node": None})
+            continue
+        if p.get("id") == "gateway":
+            ip = (snap.get("router") or {}).get("ip") or "gateway"
+            out.append({"key": "net:gateway", "kind": "gateway_down", "severity": "critical",
+                        "title": f"Gateway {ip} is not answering", "target": "gateway", "node": None})
+            continue
+        if p.get("id") == "dns-lab":
+            out.append({"key": "net:dns", "kind": "dns_broken", "severity": "warning",
+                        "title": "Lab DNS is not resolving names", "target": "dns-lab", "node": None})
+            continue
         tgt = p.get("target")
         g = guests.get(tgt) if isinstance(tgt, int) else None
         node = g["node"] if g else (tgt if tgt in nodes else None)
