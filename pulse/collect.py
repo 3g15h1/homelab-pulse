@@ -322,6 +322,54 @@ def build_conditions(snap, stopped, tasks, now, flap_hist=None):
     return out
 
 
+def diff_services(store, current, names, now):
+    """Newly-appeared services -> conditions. `current`: {vmid: [(port, product)]} for running
+    guests with fresh scans; `names`: {vmid: (name, node)} for all guests. Persists the baseline
+    in the store; the very first run seeds silently. Stopped guests keep their baseline."""
+    seen = store.get("seen_services")
+    conds, new_seen = [], {}
+    for vmid in sorted(names):
+        key = str(vmid)
+        if vmid in current:
+            cur = sorted([port, product or ""] for port, product in current[vmid])
+            new_seen[key] = cur
+            if seen is not None:
+                old_ports = {p for p, _ in seen.get(key, [])}
+                name, node = names[vmid]
+                for port, product in cur:
+                    if port not in old_ports:
+                        label = f"port {port}" + (f" ({product})" if product else "")
+                        conds.append({"key": f"svc:{vmid}:{port}:new", "kind": "service_appeared",
+                                      "severity": "warning", "title": f"New service on {name}: {label}",
+                                      "target": vmid, "node": node})
+        elif seen and key in seen:
+            new_seen[key] = seen[key]
+    store.put("seen_services", new_seen)
+    return conds
+
+
+def diff_ips(store, current, names, now):
+    """Guest IP changes -> conditions. `current`: {vmid: ip or None}; `names`: {vmid: (name, node)}.
+    Persists the baseline; first sight seeds silently; stopped guests keep their last IP."""
+    last = store.get("last_ips") or {}
+    conds, new_last = [], {}
+    for vmid in sorted(names):
+        key = str(vmid)
+        ip = current.get(vmid)
+        name, node = names[vmid]
+        if ip:
+            new_last[key] = ip
+            old = last.get(key)
+            if old and old != ip:
+                conds.append({"key": f"guest:{vmid}:ip", "kind": "ip_changed", "severity": "warning",
+                              "title": f"{name} changed IP from {old} to {ip}",
+                              "target": vmid, "node": node})
+        elif key in last:
+            new_last[key] = last[key]
+    store.put("last_ips", new_last)
+    return conds
+
+
 # ---------------------------------------------------------------- collector
 
 class Collector:
@@ -372,6 +420,7 @@ class Collector:
         self._alert_lock = threading.Lock()     # engine state is touched by the alert loop and "Clear" requests
         self.events_log = deque(reversed(self.store.recent_events(50)), maxlen=50)   # oldest first
         self.stopped = {}           # vmid -> when it was seen going from running to stopped
+        self.pending_conds = []     # discovery diffs waiting for the next alert poll
         self.flap_hist = {}         # vmid -> deque of unexplained stop timestamps
         self.tasks_raw = []
         self.storage_hist, self.storage_hist_at = {}, None
@@ -542,6 +591,14 @@ class Collector:
             self._ok("discovery", now)
             if self.ov_error:
                 self.sources["discovery"].update(ok=False, error=self.ov_error)
+        if full:
+            names = {g["vmid"]: (g["name"], g.get("node")) for g in guests}
+            svc = {g["vmid"]: [(f.port, f.product) for f in self.discoverer.services(g["vmid"])]
+                   for g in guests if g["running"]}
+            ips = {g["vmid"]: self.meta.get(g["vmid"], {}).get("ip") for g in guests if g["running"]}
+            new_conds = diff_services(self.store, svc, names, now) + diff_ips(self.store, ips, names, now)
+            with self.cond:
+                self.pending_conds.extend(new_conds)
         if full and self.heal:                  # after the checks are published: this takes a while over SSH
             self.heal.learn([{"check_id": f"{g['vmid']}:{f.port}", "vmid": g["vmid"], "port": f.port,
                               "running": g["running"]}
@@ -578,6 +635,10 @@ class Collector:
             self.storage_hist_at = now
         conds = build_conditions(snap, dict(self.stopped), self.tasks_raw, now, self.flap_hist)
         conds += early.evaluate(snap, self.storage_hist, cfg["warnings"], self.early_state, now)
+        with self.cond:
+            if self.pending_conds:
+                conds += self.pending_conds
+                self.pending_conds = []
         mutes = self.store.list_mutes(now)
         self._heal_cfg = cfg.get("heal", {"mode": "off"})
         heal_events = []

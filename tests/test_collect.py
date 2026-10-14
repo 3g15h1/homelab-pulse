@@ -404,3 +404,65 @@ class GuestFlappingTests(unittest.TestCase):
     def test_flap_kind_default_on(self):
         import settings
         self.assertTrue(settings.DEFAULTS["alerts"]["kinds"]["guest_flapping"])
+
+
+class DiscoveryDiffTests(unittest.TestCase):
+    def _store(self):
+        import store as store_mod
+        return store_mod.Store(":memory:")
+
+    def test_new_service_detected(self):
+        st = self._store()
+        st.put("seen_services", {"101": [[80, "http"]]})
+        cur = {101: [(80, "http"), (8443, "https-alt")]}
+        conds = collect.diff_services(st, cur, {101: ("web", "pve")}, 1000.0)
+        self.assertEqual([(c["kind"], c["key"]) for c in conds],
+                         [("service_appeared", "svc:101:8443:new")])
+        self.assertIn("8443", conds[0]["title"])
+        self.assertIn("web", conds[0]["title"])
+
+    def test_first_run_seeds_silently(self):
+        st = self._store()
+        conds = collect.diff_services(st, {101: [(80, "http")]}, {101: ("web", "pve")}, 1000.0)
+        self.assertEqual(conds, [])
+        self.assertEqual(st.get("seen_services"), {"101": [[80, "http"]]})
+
+    def test_removed_service_no_alert_prunes(self):
+        st = self._store()
+        st.put("seen_services", {"101": [[80, "http"], [443, "https"]]})
+        conds = collect.diff_services(st, {101: [(80, "http")]}, {101: ("web", "pve")}, 1000.0)
+        self.assertEqual(conds, [])
+        self.assertEqual(st.get("seen_services"), {"101": [[80, "http"]]})
+
+    def test_deleted_guest_pruned(self):
+        st = self._store()
+        st.put("seen_services", {"101": [[80, "http"]], "999": [[22, "ssh"]]})
+        collect.diff_services(st, {101: [(80, "http")]}, {101: ("web", "pve")}, 1000.0)
+        self.assertNotIn("999", st.get("seen_services"))
+
+    def test_ip_change_detected(self):
+        st = self._store()
+        st.put("last_ips", {"101": "192.168.0.52"})
+        conds = collect.diff_ips(st, {101: "192.168.0.53"}, {101: ("paperless", "pve")}, 1000.0)
+        self.assertEqual(conds[0]["kind"], "ip_changed")
+        self.assertEqual(conds[0]["key"], "guest:101:ip")
+        self.assertIn("192.168.0.52", conds[0]["title"])
+        self.assertIn("192.168.0.53", conds[0]["title"])
+        self.assertEqual(st.get("last_ips"), {"101": "192.168.0.53"})
+
+    def test_ip_first_sight_silent(self):
+        st = self._store()
+        conds = collect.diff_ips(st, {101: "192.168.0.52"}, {101: ("paperless", "pve")}, 1000.0)
+        self.assertEqual(conds, [])
+        self.assertEqual(st.get("last_ips"), {"101": "192.168.0.52"})
+
+    def test_ip_unchanged_silent(self):
+        st = self._store()
+        st.put("last_ips", {"101": "192.168.0.52"})
+        conds = collect.diff_ips(st, {101: "192.168.0.52"}, {101: ("paperless", "pve")}, 1000.0)
+        self.assertEqual(conds, [])
+
+    def test_diff_kinds_default_on(self):
+        import settings
+        for k in ("service_appeared", "ip_changed"):
+            self.assertTrue(settings.DEFAULTS["alerts"]["kinds"][k], k)
