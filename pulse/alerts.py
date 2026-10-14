@@ -121,6 +121,8 @@ class AlertEngine:
         self.events = heal_events
         items, self.states["_pending"] = list(self.states["_pending"]), []
         present = {c["key"]: c for c in conditions if cfg["kinds"].get(c["kind"], True)}
+        down_nodes = {c["node"] for c in present.values()
+                      if c["kind"] == "node_offline" and c.get("node")}
         for key, c in present.items():
             st = self.states.get(key)
             muted = self._muted(key, c, mutes)
@@ -130,10 +132,14 @@ class AlertEngine:
                                          "since": now, "sent": False, "last_sent": None}
             escalated = st["state"] == "firing" and RANK[c["severity"]] > RANK[st["severity"]]
             st.update(severity=c["severity"], title=c["title"], target=c.get("target"), node=c.get("node"))
+            # Dependency suppression: a dead node already explains its guests/services.
+            # Hold their alerts (state keeps running) instead of sending noise.
+            suppressed = (c["kind"] in ("service_down", "guest_stopped", "warning")
+                          and c.get("node") in down_nodes)
             if st["state"] == "pending" and now - st["since"] >= self._delay(c["kind"], cfg):
                 st["state"] = "firing"
                 self._event(st, key, "fire", now)
-                if not muted:
+                if not muted and not suppressed:
                     hold = self.on_fire(key, c, now) if self.on_fire else None
                     if hold and hold > now:
                         st["hold_until"] = hold            # a fix is running; wait for its outcome
@@ -147,11 +153,13 @@ class AlertEngine:
                     if now < st["hold_until"]:
                         continue
                     del st["hold_until"]
-                    items.append(self._item(st, key, "fire", now))
-                    st.update(sent=True, last_sent=now)
+                    if not suppressed:
+                        items.append(self._item(st, key, "fire", now))
+                        st.update(sent=True, last_sent=now)
                 elif not st["sent"] or escalated:          # mute ended, or got worse
-                    items.append(self._item(st, key, "fire", now))
-                    st.update(sent=True, last_sent=now)
+                    if not suppressed:
+                        items.append(self._item(st, key, "fire", now))
+                        st.update(sent=True, last_sent=now)
                 elif cfg["repeat_every_s"] and now - st["last_sent"] >= cfg["repeat_every_s"]:
                     items.append(self._item(st, key, "repeat", now))
                     st["last_sent"] = now

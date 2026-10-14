@@ -307,3 +307,88 @@ class NetDownFlagTests(unittest.TestCase):
                   "title": "Internet is unreachable", "target": "internet", "node": None}]
         notes = eng.process(conds, 1000.0, cfg, [], "lab")
         self.assertEqual(notes, [])
+
+
+class SuppressionTests(unittest.TestCase):
+    def _cfg(self):
+        cfg = copy.deepcopy(settings.DEFAULTS["alerts"])
+        for k in ("node_offline", "service_down", "guest_stopped", "warning"):
+            cfg["kinds"][k] = True
+        cfg["down_after_s"] = 0
+        cfg["group_window_s"] = 0
+        cfg["quiet"]["enabled"] = False
+        return cfg
+
+    def _titles(self, notes):
+        return [it["title"] for n in notes for it in n.items]
+
+    def test_node_down_suppresses_its_guests(self):
+        eng = alerts.AlertEngine({}, started=0.0)
+        conds = [
+            {"key": "node:pve", "kind": "node_offline", "severity": "critical",
+             "title": "pve is offline", "target": "pve", "node": "pve"},
+            {"key": "check:101:80", "kind": "service_down", "severity": "critical",
+             "title": "web is down", "target": 101, "node": "pve"},
+            {"key": "guest:101:stopped", "kind": "guest_stopped", "severity": "warning",
+             "title": "web stopped unexpectedly", "target": 101, "node": "pve"},
+            {"key": "warn:zfs_health:pve/tank", "kind": "warning", "severity": "critical",
+             "title": "ZFS pool tank on pve is DEGRADED", "target": "pve", "node": "pve"},
+        ]
+        notes = eng.process(conds, 1000.0, self._cfg(), [], "lab")
+        titles = self._titles(notes)
+        self.assertTrue(any("pve is offline" in t for t in titles))
+        self.assertFalse(any("web is down" in t for t in titles))
+        self.assertFalse(any("stopped unexpectedly" in t for t in titles))
+        self.assertFalse(any("ZFS pool" in t for t in titles))
+
+    def test_other_node_still_fires(self):
+        eng = alerts.AlertEngine({}, started=0.0)
+        conds = [
+            {"key": "node:pve", "kind": "node_offline", "severity": "critical",
+             "title": "pve is offline", "target": "pve", "node": "pve"},
+            {"key": "check:102:80", "kind": "service_down", "severity": "critical",
+             "title": "db is down", "target": 102, "node": "pve2"},
+        ]
+        notes = eng.process(conds, 1000.0, self._cfg(), [], "lab")
+        titles = self._titles(notes)
+        self.assertTrue(any("db is down" in t for t in titles))
+
+    def test_suppressed_then_recovered_sends_nothing(self):
+        eng = alerts.AlertEngine({}, started=0.0)
+        cfg = self._cfg()
+        node = [{"key": "node:pve", "kind": "node_offline", "severity": "critical",
+                 "title": "pve is offline", "target": "pve", "node": "pve"}]
+        both = node + [{"key": "check:101:80", "kind": "service_down", "severity": "critical",
+                        "title": "web is down", "target": 101, "node": "pve"}]
+        eng.process(both, 1000.0, cfg, [], "lab")   # service suppressed
+        notes = eng.process(node, 2000.0, cfg, [], "lab")  # service also recovered
+        states = [it["state"] for n in notes for it in n.items]
+        self.assertNotIn("resolve", [s for s in states if s])
+        # only the node resolve (service was never sent, so nothing to resolve)
+        for n in notes:
+            for it in n.items:
+                self.assertNotIn("web is down", it["title"])
+
+    def test_dependent_fires_when_node_recovers(self):
+        eng = alerts.AlertEngine({}, started=0.0)
+        cfg = self._cfg()
+        node = [{"key": "node:pve", "kind": "node_offline", "severity": "critical",
+                 "title": "pve is offline", "target": "pve", "node": "pve"}]
+        svc = [{"key": "check:101:80", "kind": "service_down", "severity": "critical",
+                "title": "web is down", "target": 101, "node": "pve"}]
+        eng.process(node + svc, 1000.0, cfg, [], "lab")  # service suppressed
+        notes = eng.process(svc, 2000.0, cfg, [], "lab")  # node back, service still down
+        titles = self._titles(notes)
+        self.assertTrue(any("web is down" in t for t in titles))
+
+    def test_nodeless_conditions_never_suppressed(self):
+        eng = alerts.AlertEngine({}, started=0.0)
+        conds = [
+            {"key": "node:pve", "kind": "node_offline", "severity": "critical",
+             "title": "pve is offline", "target": "pve", "node": "pve"},
+            {"key": "net:internet", "kind": "net_down", "severity": "critical",
+             "title": "Internet is unreachable", "target": "internet", "node": None},
+        ]
+        notes = eng.process(conds, 1000.0, self._cfg(), [], "lab")
+        titles = self._titles(notes)
+        self.assertTrue(any("Internet is unreachable" in t for t in titles))
