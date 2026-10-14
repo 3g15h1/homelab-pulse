@@ -372,6 +372,12 @@ const KINDS = [
   ["guest_stopped", "A guest stops unexpectedly", "Problems"],
   ["backup_failed", "A backup job fails", "Problems"],
   ["warning", "Early warnings", "Watches"],
+  ["net_down", "Internet unreachable", "Problems"],
+  ["gateway_down", "Gateway not answering", "Problems"],
+  ["dns_broken", "Lab DNS not resolving", "Problems"],
+  ["guest_flapping", "Guest keeps restarting", "Problems"],
+  ["service_appeared", "New service appeared", "Problems"],
+  ["ip_changed", "Guest IP changed", "Problems"],
 ];
 const WARN = {
   storage_full: ["Storage filling up", [["warn_days", "warn when full within (days)"], ["crit_days", "critical when full within (days)"], ["warn_pct", "or above (%)"], ["crit_pct", "critical above (%)"]]],
@@ -381,6 +387,9 @@ const WARN = {
   backup_stale: ["Guest without a recent backup", [["hours", "stale after (hours)"]]],
   node_memory: ["Node memory high", [["pct", "above (%)"], ["minutes", "for (minutes)"]]],
   ct_disk: ["Container disk filling up", [["warn_pct", "warn above (%)"], ["crit_pct", "critical above (%)"]]],
+  zfs_health: ["ZFS pool unhealthy", []],
+  backup_storage_full: ["Backup storage filling up", [["warn_days", "warn when full within (days)"], ["crit_days", "critical when full within (days)"], ["warn_pct", "or above (%)"], ["crit_pct", "critical above (%)"]]],
+  pve_updates: ["Proxmox updates pending (needs the Sys.Modify token: install.sh --with-updates)", []],
 };
 const MODE_LABEL = { off: "Off", dry_run: "Dry run", ask: "Ask first", auto: "Automatic" };
 const SRC_LABEL = { "built-in": "built-in", "local": "yours", "local override": "yours (overrides built-in)" };
