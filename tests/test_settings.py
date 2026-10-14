@@ -112,3 +112,19 @@ class NewAlertKindsTests(unittest.TestCase):
         self.assertTrue(d["alerts"]["kinds"]["gateway_down"])
 
 
+
+
+class DataSafetyWarningTests(unittest.TestCase):
+    def test_new_warning_defaults(self):
+        w = settings.DEFAULTS["warnings"]
+        self.assertEqual(w["zfs_health"], {"enabled": True})
+        self.assertTrue(w["backup_storage_full"]["enabled"])
+        self.assertFalse(w["pve_updates"]["enabled"])
+
+    def test_new_warnings_validate(self):
+        d = settings.validate({"warnings": {"zfs_health": {"enabled": False},
+                                             "backup_storage_full": {"warn_pct": 80},
+                                             "pve_updates": {"enabled": True}}})
+        self.assertFalse(d["warnings"]["zfs_health"]["enabled"])
+        self.assertEqual(d["warnings"]["backup_storage_full"]["warn_pct"], 80)
+        self.assertTrue(d["warnings"]["pve_updates"]["enabled"])

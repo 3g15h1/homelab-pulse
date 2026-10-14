@@ -39,7 +39,7 @@ def _cond(rule, subject, severity, title, target, node=None):
             "target": target, "node": node}
 
 
-def _storage(cfg, sid, label, used, total, points, now, subject, target):
+def _storage(cfg, sid, label, used, total, points, now, subject, target, rule="storage_full"):
     if not total:
         return None
     pct = used / total * 100
@@ -53,7 +53,7 @@ def _storage(cfg, sid, label, used, total, points, now, subject, target):
         return None
     trend = days is not None and days < (cfg["crit_days"] if sev == "critical" else cfg["warn_days"])
     title = f"{label} full in ~{round(days)} days" if trend else f"{label} {round(pct)} % full"
-    return _cond("storage_full", subject, sev, title, target, target)
+    return _cond(rule, subject, sev, title, target, target)
 
 
 def evaluate(snapshot, storage_hist, cfg, state, now):
@@ -62,18 +62,24 @@ def evaluate(snapshot, storage_hist, cfg, state, now):
     nodes = [n for n in snapshot.get("nodes", []) if n.get("online")]
     multi = len(snapshot.get("nodes", [])) > 1
 
-    c = cfg["storage_full"]
-    if c["enabled"]:
+    for rule, only_backup in (("storage_full", False), ("backup_storage_full", True)):
+        c = cfg[rule]
+        if not c["enabled"]:
+            continue
         for n in nodes:
             for s in n.get("storage", []):
+                if bool(s.get("for_backup")) != only_backup:
+                    continue
                 label = f"{s['id']} on {n['name']}" if multi else s["id"]
                 w = _storage(c, s["id"], label, s["used"], s["total"], storage_hist.get((n["name"], s["id"])), now,
-                             f"{n['name']}/{s['id']}", n["name"])
+                             f"{n['name']}/{s['id']}", n["name"], rule=rule)
                 if w:
                     out.append(w)
         for s in snapshot.get("shared_storage", []):
+            if bool(s.get("for_backup")) != only_backup:
+                continue
             w = _storage(c, s["id"], s["id"], s["used"], s["total"], storage_hist.get(("*", s["id"])), now,
-                         s["id"], None)
+                         s["id"], None, rule=rule)
             if w:
                 out.append(w)
 
@@ -105,6 +111,26 @@ def evaluate(snapshot, storage_hist, cfg, state, now):
                 out.append(_cond("smart", subject, "critical",
                                  f"{d.get('model') or dev} on {n['name']}: SMART says {d['health']}", n["name"],
                                  n["name"]))
+
+    c = cfg["zfs_health"]
+    if c["enabled"]:
+        for n in nodes:
+            for z in n.get("zfs", []):
+                health = (z.get("health") or "UNKNOWN").upper()
+                if health != "ONLINE":
+                    out.append(_cond("zfs_health", f"{n['name']}/{z['name']}", "critical",
+                                     f"ZFS pool {z['name']} on {n['name']} is {health}", n["name"], n["name"]))
+
+    c = cfg["pve_updates"]
+    if c["enabled"]:
+        for n in nodes:
+            updates = n.get("updates")
+            if not updates:
+                continue
+            nu = len(updates)
+            out.append(_cond("pve_updates", n["name"], "warning",
+                             f"{nu} package update{'s' if nu != 1 else ''} pending on {n['name']}",
+                             n["name"], n["name"]))
 
     c = cfg["backup_stale"]
     if c["enabled"] and snapshot.get("backups"):

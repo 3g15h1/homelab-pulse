@@ -158,3 +158,69 @@ class RuleTests(unittest.TestCase):
     def test_every_condition_has_kind_warning(self):
         for c in self.ev(snap()):
             self.assertEqual(c["kind"], "warning")
+
+
+class DataSafetyTests(unittest.TestCase):
+    def ev(self, s, **kw):
+        return early.evaluate(s, {}, cfg(**kw), {}, NOW)
+
+    def clean_snap(self):
+        s = snap()
+        s["nodes"][0]["storage"] = [{"id": "local-lvm", "used": 50 * GB, "total": 100 * GB,
+                                     "ok": True}]
+        return s
+
+    def test_zfs_degraded_is_critical(self):
+        s = self.clean_snap()
+        s["nodes"][0]["zfs"] = [{"name": "tank", "health": "DEGRADED"}]
+        out = self.ev(s)
+        self.assertEqual([(c["key"], c["severity"]) for c in out],
+                         [("warn:zfs_health:pve1/tank", "critical")])
+        self.assertIn("DEGRADED", out[0]["title"])
+
+    def test_zfs_online_silent(self):
+        s = self.clean_snap()
+        s["nodes"][0]["zfs"] = [{"name": "tank", "health": "ONLINE"}]
+        self.assertEqual(self.ev(s), [])
+
+    def test_zfs_no_pools_silent(self):
+        self.assertEqual(self.ev(self.clean_snap()), [])
+
+    def test_backup_storage_full(self):
+        s = self.clean_snap()
+        s["nodes"][0]["storage"] = [{"id": "backup", "used": 96 * GB, "total": 100 * GB,
+                                     "ok": True, "for_backup": True}]
+        out = self.ev(s)
+        self.assertEqual([(c["key"], c["severity"]) for c in out],
+                         [("warn:backup_storage_full:pve1/backup", "critical")])
+
+    def test_backup_storage_ignored_by_storage_full(self):
+        s = snap()
+        s["nodes"][0]["storage"] = [{"id": "backup", "used": 96 * GB, "total": 100 * GB,
+                                     "ok": True, "for_backup": True}]
+        out = early.evaluate(s, {}, cfg(backup_storage_full__enabled=False), {}, NOW)
+        self.assertEqual(out, [])
+
+    def test_pve_updates_disabled_by_default(self):
+        self.assertFalse(settings.DEFAULTS["warnings"]["pve_updates"]["enabled"])
+
+    def test_pve_updates_reports_count(self):
+        s = self.clean_snap()
+        s["nodes"][0]["updates"] = [{"package": "pve-manager", "version": "9.2.21",
+                                     "old": "9.2.20", "origin": "Proxmox"}]
+        out = early.evaluate(s, {}, cfg(pve_updates__enabled=True), {}, NOW)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["key"], "warn:pve_updates:pve1")
+        self.assertEqual(out[0]["severity"], "warning")
+
+    def test_pve_updates_none_silent(self):
+        s = self.clean_snap()
+        s["nodes"][0]["updates"] = []
+        out = early.evaluate(s, {}, cfg(pve_updates__enabled=True), {}, NOW)
+        self.assertEqual(out, [])
+
+    def test_pve_updates_unknown_silent(self):
+        s = self.clean_snap()
+        s["nodes"][0]["updates"] = None
+        out = early.evaluate(s, {}, cfg(pve_updates__enabled=True), {}, NOW)
+        self.assertEqual(out, [])
