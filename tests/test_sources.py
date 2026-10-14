@@ -98,3 +98,18 @@ class RrdTests(unittest.TestCase):
         self.assertIn("memused", d.node_rrd("pve1", "week")[-1])
         st = d.storage_rrd("pve2", "local-lvm", "month")
         self.assertTrue(st[-1]["used"] > st[0]["used"])
+
+
+class NewSourceMethodsTests(unittest.TestCase):
+    def test_new_source_paths(self):
+        c = sources.PveClient("h", 8006, "t", None, tls_name="n")
+        seen = []
+        c._request = lambda path, check_name=True: seen.append(path) or []
+        c.zfs_pools("pve1")
+        c.storage_config()
+        c.node_updates("pve1")
+        self.assertEqual(seen, ["/nodes/pve1/disks/zfs", "/storage", "/nodes/pve1/apt/update"])
+
+    def test_demo_implements_new_calls(self):
+        for m in ("zfs_pools", "storage_config", "node_updates"):
+            self.assertTrue(callable(getattr(demo.DemoPve, m)), m)

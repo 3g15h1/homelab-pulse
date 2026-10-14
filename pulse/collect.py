@@ -92,14 +92,18 @@ def build_guests(resources, meta, rates, now):
     return guests
 
 
-def build_storage(resources):
-    """-> ({node: [storage]}, [shared storage, listed once])"""
+def build_storage(resources, content_map=None):
+    """-> ({node: [storage]}, [shared storage, listed once]). `content_map` is
+    {storage id: content string} from /storage; marks backup storages."""
+    content_map = content_map or {}
     per_node, shared = {}, {}
     for r in resources:
         if r.get("type") != "storage":
             continue
+        contents = [c.strip() for c in content_map.get(r["storage"], "").split(",")]
         s = {"id": r["storage"], "used": r.get("disk") or 0, "total": r.get("maxdisk") or 0,
-             "type": r.get("plugintype", ""), "ok": r.get("status") == "available"}
+             "type": r.get("plugintype", ""), "ok": r.get("status") == "available",
+             "for_backup": "backup" in contents}
         if r.get("shared"):
             shared.setdefault(s["id"], s)
         else:
@@ -330,6 +334,8 @@ class Collector:
         self.nodes, self.guests, self.resources = [], [], []
         self.node_ips, self.router = {}, None
         self.storage, self.shared_storage, self.disks = {}, [], {}
+        self.zfs, self.node_updates, self.storage_content = {}, {}, {}
+        self._updates_unsupported = False  # token lacks Sys.Modify; stop asking
         self.meta = {}              # vmid -> {ips, ip, tags, role, icon, services}
         self.agent_cache = {}
         self.pending = {}           # vmid -> time its early discovery is due
@@ -371,7 +377,7 @@ class Collector:
         nodes = []
         for r in sorted((r for r in res if r.get("type") == "node"), key=lambda r: r["node"]):
             nodes.append(self._node_view(r, [g for g in guests if g["node"] == r["node"]]))
-        per_node, shared = build_storage(res)
+        per_node, shared = build_storage(res, self.storage_content)
         running = {g["vmid"]: g["running"] for g in guests}
         with self.cond:
             if self.prev_running is not None:      # a new guest, or one that just started: look soon
@@ -427,10 +433,30 @@ class Collector:
         for g in self.guests:
             self._refresh_ips(g, now)
         router = self._find_router(online)
-        disks, runs, per_vm = {}, [], {}
+        disks, runs, per_vm, zfs = {}, [], {}, {}
+        try:
+            self.storage_content = self.pve.storage_config()
+        except Exception as e:  # noqa: BLE001 - older PVE or limited token; backup flag just stays off
+            log.warning("storage config: %s", e)
+        if not self._updates_unsupported:
+            for node in online:
+                try:
+                    self.node_updates[node] = [
+                        {"package": u.get("Package"), "version": u.get("Version"),
+                         "old": u.get("OldVersion"), "origin": u.get("Origin") or ""}
+                        for u in self.pve.node_updates(node)]
+                except Exception as e:  # noqa: BLE001
+                    if "403" in str(e) or "401" in str(e):
+                        self._updates_unsupported = True
+                        log.warning("PVE updates need Sys.Modify; not retrying")
+                    else:
+                        log.warning("node %s updates: %s", node, e)
+                    break
         for node in online:
             try:
                 disks[node] = build_disks(self.pve.disks(node))
+                zfs[node] = [{"name": z.get("name"), "health": (z.get("health") or "UNKNOWN").upper()}
+                             for z in self.pve.zfs_pools(node)]
                 done = sorted((r for r in self.pve.backup_runs(node) if r.get("endtime") and r.get("status")),
                               key=lambda r: r["starttime"])
             except Exception as e:  # noqa: BLE001 - keep the other nodes
@@ -446,7 +472,7 @@ class Collector:
         self.vzdump_logs = {k: v for k, v in self.vzdump_logs.items() if k in keep}
         tasks = {t["upid"]: t for t in self.pve.tasks() + runs if t.get("upid")}   # de-duplicate
         with self.cond:
-            self.router, self.disks = router, disks
+            self.router, self.disks, self.zfs = router, disks, zfs
             self._apply_meta()
             names = {g["vmid"]: g["name"] for g in self.guests}
             self.backups = backup_summary(runs, per_vm, self.guests, now)
@@ -879,7 +905,9 @@ class Collector:
                 hist = [p[1] for p in list(self.history.get(n["name"], ()))[-120:]]
                 nodes.append(dict(n, ip=self.node_ips.get(n["name"]), cpu_history=hist,
                                   storage=list(self.storage.get(n["name"], ())),
-                                  disks=list(self.disks.get(n["name"], ()))))
+                                  disks=list(self.disks.get(n["name"], ())),
+                                  zfs=list(self.zfs.get(n["name"], ())),
+                                  updates=self.node_updates.get(n["name"])))
             events = sorted(self.task_ev + list(self.events_log), key=lambda e: -e["ts"])[:30]
             return {
                 "version": self.version, "now": now, "router": self.router,

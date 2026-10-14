@@ -189,6 +189,15 @@ class DemoPve:
         return {"result": [{"name": "lo", "ip-addresses": [{"ip-address": "127.0.0.1", "ip-address-type": "ipv4"}]},
                            {"name": "ens18", "ip-addresses": [{"ip-address": g[8], "ip-address-type": "ipv4"}]}]}
 
+    def zfs_pools(self, node):
+        return [{"name": "tank", "health": "ONLINE"}] if node == "pve1" else []
+
+    def storage_config(self):
+        return {"local": "iso,backup,vztmpl", "backup": "backup"}
+
+    def node_updates(self, node):
+        return []
+
     def disks(self, node):
         if node == "pve1":
             return [{"devpath": "/dev/nvme0n1", "model": "Samsung SSD 980 1TB", "type": "nvme", "size": 1000204886016,

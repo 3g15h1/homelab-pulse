@@ -100,3 +100,16 @@ class PveClient:
 
     def storage_rrd(self, node, storage, timeframe):
         return self._get(f"/nodes/{node}/storage/{storage}/rrddata?timeframe={timeframe}&cf=AVERAGE")
+
+    def zfs_pools(self, node):
+        """ZFS pools on a node: [{name, health, ...}]. Empty when the node has no ZFS."""
+        return self._get(f"/nodes/{node}/disks/zfs")
+
+    def storage_config(self):
+        """Cluster storage config as {storage id: content string} (e.g. 'backup,iso')."""
+        return {s["storage"]: s.get("content", "") for s in self._get("/storage")}
+
+    def node_updates(self, node):
+        """Available package updates: [{Package, Version, OldVersion, ...}].
+        Reading this needs Sys.Modify, which the stock read-only token lacks."""
+        return self._get(f"/nodes/{node}/apt/update")

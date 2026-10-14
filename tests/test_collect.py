@@ -321,3 +321,27 @@ class NetConditionTests(unittest.TestCase):
             {"id": "dns-lab", "name": "Lab DNS", "up": True, "target": "dns-lab"},
         ])
         self.assertEqual(collect.build_conditions(snap, {}, [], 1000.0), [])
+
+
+class BuildStorageBackupTests(unittest.TestCase):
+    def _res(self, sid):
+        return [{"type": "storage", "storage": sid, "node": "pve", "disk": 1, "maxdisk": 2,
+                 "status": "available", "shared": 0}]
+
+    def test_build_storage_marks_backup(self):
+        per_node, _ = collect.build_storage(self._res("backup"), {"backup": "backup,iso"})
+        self.assertTrue(per_node["pve"][0]["for_backup"])
+
+    def test_build_storage_no_content_map(self):
+        per_node, _ = collect.build_storage(self._res("local"))
+        self.assertFalse(per_node["pve"][0]["for_backup"])
+
+    def test_build_storage_non_backup_content(self):
+        per_node, _ = collect.build_storage(self._res("local-lvm"), {"local-lvm": "images,rootdir"})
+        self.assertFalse(per_node["pve"][0]["for_backup"])
+
+    def test_build_storage_shared_backup(self):
+        res = [{"type": "storage", "storage": "nas", "node": "pve", "disk": 1, "maxdisk": 2,
+                "status": "available", "shared": 1}]
+        _, shared = collect.build_storage(res, {"nas": "backup"})
+        self.assertTrue(shared[0]["for_backup"])
