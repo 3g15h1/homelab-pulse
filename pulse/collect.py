@@ -250,9 +250,18 @@ STOP_TASKS = {"vzstop", "vzshutdown", "qmstop", "qmshutdown", "vzdestroy", "qmde
               "vzsuspend", "qmsuspend", "qmpause"}
 STOP_GRACE_S = 120      # a stop task this close to the stop explains it
 STOP_SETTLE_S = 90      # wait this long so the task list (polled every 60 s) has caught up
+FLAP_WINDOW_S = 3600    # count unexplained stops inside this window
+FLAP_COUNT = 3          # ... this many -> the guest is flapping
 
 
-def build_conditions(snap, stopped, tasks, now):
+def _stop_explained(tasks, vmid, ts):
+    """True when a stop/shutdown/migrate task explains the stop at `ts`."""
+    return any(t.get("type") in STOP_TASKS and str(t.get("id")) == str(vmid)
+               and (t.get("starttime") or 0) - STOP_GRACE_S <= ts <= (t.get("endtime") or ts) + STOP_GRACE_S
+               for t in tasks)
+
+
+def build_conditions(snap, stopped, tasks, now, flap_hist=None):
     """What is wrong right now, as alert conditions (see alerts.py). `stopped` maps VMIDs that went
     from running to stopped to when that was seen; `tasks` is Proxmox's recent task list."""
     out = []
@@ -298,12 +307,18 @@ def build_conditions(snap, stopped, tasks, now):
         g = guests.get(vmid)
         if not g or g.get("running") or now - ts < STOP_SETTLE_S:
             continue
-        explained = any(t.get("type") in STOP_TASKS and str(t.get("id")) == str(vmid)
-                        and (t.get("starttime") or 0) - STOP_GRACE_S <= ts <= (t.get("endtime") or now) + STOP_GRACE_S
-                        for t in tasks)
-        if not explained:
+        if not _stop_explained(tasks, vmid, ts):
             out.append({"key": f"guest:{vmid}:stopped", "kind": "guest_stopped", "severity": "warning",
                         "title": f"{g['name']} stopped unexpectedly", "target": vmid, "node": g.get("node")})
+    for vmid, times in (flap_hist or {}).items():
+        recent = [t for t in times if t >= now - FLAP_WINDOW_S]
+        if len([t for t in recent if not _stop_explained(tasks, vmid, t)]) < FLAP_COUNT:
+            continue
+        g = guests.get(vmid)
+        if g and g.get("running"):      # a stopped guest gets guest_stopped instead: no doubles
+            out.append({"key": f"guest:{vmid}:flapping", "kind": "guest_flapping", "severity": "warning",
+                        "title": f"{g['name']} restarted {FLAP_COUNT} times in the last hour",
+                        "target": vmid, "node": g.get("node")})
     return out
 
 
@@ -357,6 +372,7 @@ class Collector:
         self._alert_lock = threading.Lock()     # engine state is touched by the alert loop and "Clear" requests
         self.events_log = deque(reversed(self.store.recent_events(50)), maxlen=50)   # oldest first
         self.stopped = {}           # vmid -> when it was seen going from running to stopped
+        self.flap_hist = {}         # vmid -> deque of unexplained stop timestamps
         self.tasks_raw = []
         self.storage_hist, self.storage_hist_at = {}, None
         self.early_state, self.attention = {}, []
@@ -386,8 +402,15 @@ class Collector:
                         self.pending[vmid] = now + self.EARLY_DELAY
                     if not up and self.prev_running.get(vmid):
                         self.stopped[vmid] = now
+                        if not _stop_explained(self.tasks_raw, vmid, now):
+                            hist = self.flap_hist.setdefault(vmid, deque())
+                            hist.append(now)
+                            while hist and hist[0] < now - FLAP_WINDOW_S:
+                                hist.popleft()
             for vmid in [v for v in self.stopped if running.get(v, False) or v not in running]:
                 del self.stopped[vmid]
+            for vmid in [v for v in self.flap_hist if v not in running]:
+                del self.flap_hist[vmid]
             self.prev_running = running
             self.resources, self.guests, self.nodes = res, guests, nodes
             self.storage, self.shared_storage = per_node, shared
@@ -553,7 +576,7 @@ class Collector:
         if self.storage_hist_at is None or now - self.storage_hist_at >= self.STORAGE_HIST_EVERY:
             self._refresh_storage_history(snap)
             self.storage_hist_at = now
-        conds = build_conditions(snap, dict(self.stopped), self.tasks_raw, now)
+        conds = build_conditions(snap, dict(self.stopped), self.tasks_raw, now, self.flap_hist)
         conds += early.evaluate(snap, self.storage_hist, cfg["warnings"], self.early_state, now)
         mutes = self.store.list_mutes(now)
         self._heal_cfg = cfg.get("heal", {"mode": "off"})

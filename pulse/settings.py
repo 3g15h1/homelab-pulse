@@ -17,7 +17,7 @@ DEFAULTS = {
         "down_after_s": 180, "send_recovery": True, "repeat_every_s": 0, "group_window_s": 60,
         "kinds": {"service_down": True, "node_offline": True, "api_down": True, "guest_stopped": True,
                   "backup_failed": True, "warning": True, "net_down": True, "gateway_down": True,
-                  "dns_broken": True},
+                  "dns_broken": True, "guest_flapping": True},
         "quiet": {"enabled": False, "start": "23:00", "end": "07:00", "critical_too": False},
     },
     "warnings": {

@@ -345,3 +345,62 @@ class BuildStorageBackupTests(unittest.TestCase):
                 "status": "available", "shared": 1}]
         _, shared = collect.build_storage(res, {"nas": "backup"})
         self.assertTrue(shared[0]["for_backup"])
+
+
+class GuestFlappingTests(unittest.TestCase):
+    def _snap(self, running=True):
+        return {"guests": [{"vmid": 101, "name": "web", "running": running, "node": "pve"}],
+                "probes": [], "nodes": []}
+
+    def test_flapping_after_three_quick_stops(self):
+        import collections
+        now = 100000.0
+        flap = {101: collections.deque([now - 3000, now - 2000, now - 1000])}
+        conds = collect.build_conditions(self._snap(), {}, [], now, flap)
+        kinds = [c["kind"] for c in conds]
+        self.assertIn("guest_flapping", kinds)
+        flap_c = next(c for c in conds if c["kind"] == "guest_flapping")
+        self.assertEqual(flap_c["key"], "guest:101:flapping")
+        self.assertIn("3 times", flap_c["title"])
+        self.assertEqual(flap_c["severity"], "warning")
+
+    def test_two_stops_no_flap(self):
+        import collections
+        now = 100000.0
+        flap = {101: collections.deque([now - 2000, now - 1000])}
+        conds = collect.build_conditions(self._snap(), {}, [], now, flap)
+        self.assertNotIn("guest_flapping", [c["kind"] for c in conds])
+
+    def test_old_stops_pruned(self):
+        import collections
+        now = 100000.0
+        flap = {101: collections.deque([now - 4000, now - 5000, now - 6000])}
+        conds = collect.build_conditions(self._snap(), {}, [], now, flap)
+        self.assertNotIn("guest_flapping", [c["kind"] for c in conds])
+
+    def test_stopped_guest_no_flap_double(self):
+        import collections
+        now = 100000.0
+        flap = {101: collections.deque([now - 3000, now - 2000, now - 1000])}
+        stopped = {101: now - 400}
+        conds = collect.build_conditions(self._snap(running=False), stopped, [], now, flap)
+        kinds = [c["kind"] for c in conds]
+        self.assertIn("guest_stopped", kinds)
+        self.assertNotIn("guest_flapping", kinds)
+
+    def test_explained_stops_not_counted(self):
+        import collections
+        now = 100000.0
+        flap = {101: collections.deque([now - 3000, now - 2000, now - 1000])}
+        tasks = [{"type": "qmshutdown", "id": "101", "starttime": now - 3100, "endtime": now - 2900,
+                  "status": "OK"},
+                 {"type": "qmshutdown", "id": "101", "starttime": now - 2100, "endtime": now - 1900,
+                  "status": "OK"},
+                 {"type": "qmshutdown", "id": "101", "starttime": now - 1100, "endtime": now - 900,
+                  "status": "OK"}]
+        conds = collect.build_conditions(self._snap(), {}, tasks, now, flap)
+        self.assertNotIn("guest_flapping", [c["kind"] for c in conds])
+
+    def test_flap_kind_default_on(self):
+        import settings
+        self.assertTrue(settings.DEFAULTS["alerts"]["kinds"]["guest_flapping"])
