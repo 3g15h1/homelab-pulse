@@ -160,5 +160,57 @@ class ResolveProbeTests(unittest.TestCase):
         self.assertTrue(r.ok, r.detail)
 
 
+
+
+class _FakeResp:
+    def __init__(self, status, body):
+        self.status, self._body = status, body
+    def read(self, n=-1):
+        return self._body[:n] if n and n > 0 else self._body
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeOpener:
+    def __init__(self, resp):
+        self.resp = resp
+    def open(self, req, timeout=None):
+        return self.resp
+
+
+class HttpContainsTests(unittest.TestCase):
+    def _probe(self, body, contains, status=200):
+        with unittest.mock.patch.object(probes, "_opener", _FakeOpener(_FakeResp(status, body))):
+            return probes.probe_http("http://x/", contains=contains)
+
+    def test_contains_match(self):
+        r = self._probe(b"<html><title>Dashboard</title></html>", "Dashboard")
+        self.assertTrue(r.ok, r.detail)
+
+    def test_contains_mismatch(self):
+        r = self._probe(b"<html><title>Other</title></html>", "Dashboard")
+        self.assertFalse(r.ok)
+        self.assertIn("Dashboard", r.detail)
+
+    def test_contains_ignores_binary_junk(self):
+        r = self._probe(b"\xff\xfe\x00binary", "Dashboard")
+        self.assertFalse(r.ok)  # must not raise on undecodable bytes
+
+    def test_no_contains_unchanged(self):
+        r = self._probe(b"anything", None)
+        self.assertTrue(r.ok)
+
+    def test_run_passes_contains(self):
+        with unittest.mock.patch.object(probes, "_opener",
+                                        _FakeOpener(_FakeResp(200, b"hello world"))):
+            r = probes.run({"kind": "http", "url": "http://x/", "contains": "world"})
+        self.assertTrue(r.ok, r.detail)
+        with unittest.mock.patch.object(probes, "_opener",
+                                        _FakeOpener(_FakeResp(200, b"hello world"))):
+            r = probes.run({"kind": "http", "url": "http://x/", "contains": "nope"})
+        self.assertFalse(r.ok)
+
 if __name__ == "__main__":
     unittest.main()

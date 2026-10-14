@@ -398,6 +398,11 @@ def plan_checks(services, guests, router, nodes, ov, ca_path):
         if g.get("ip"):
             checks += [check_for(g["vmid"], g["ip"], f, g["name"]) for f in services.get(g["vmid"], ())
                        if f.product not in catalog.QUIET]
+    contains_map = ov.get("http_contains", {})
+    if contains_map:
+        for c in checks:
+            if c["kind"] == "http" and c["id"] in contains_map:
+                c["contains"] = contains_map[c["id"]]
     for o in ov.get("checks", ()):
         o = dict(o, source="override")
         tgt = o.get("target")

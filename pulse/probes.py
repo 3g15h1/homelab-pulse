@@ -52,18 +52,24 @@ _opener = urllib.request.build_opener(_NoRedirect)
 _insecure_opener = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=insecure_context()))
 
 
-def probe_http(url, ok_codes=None, timeout=4.0, insecure=False):
+def probe_http(url, ok_codes=None, timeout=4.0, insecure=False, contains=None):
     """Up = any response below 500 (or one of ok_codes, if given). Redirects aren't followed.
-    `insecure` skips certificate checks for https:// (self-signed services found by discovery)."""
+    `insecure` skips certificate checks for https:// (self-signed services found by discovery).
+    `contains`: when given, the first 64 KiB of the body must include this substring."""
     t0 = time.perf_counter()
     try:
         with (_insecure_opener if insecure else _opener).open(urllib.request.Request(url, headers={"User-Agent": "homelab-pulse"}), timeout=timeout) as r:
             code = r.status
+            body = r.read(65536) if contains else None
     except urllib.error.HTTPError as e:
-        code = e.code
+        code, body = e.code, None
     except (OSError, ValueError) as e:
         return Result(False, None, _short(e))
     ok = code in ok_codes if ok_codes else code < 500
+    if ok and contains is not None:
+        text = (body or b"").decode("utf-8", "replace")
+        if contains not in text:
+            return Result(False, None, f"keyword {contains!r} not found (HTTP {code})")
     return Result(ok, _ms(t0), f"HTTP {code}")
 
 
@@ -256,7 +262,8 @@ def run(spec):
     if kind == "tcp":
         return probe_tcp(spec["host"], spec["port"])
     if kind == "http":
-        return probe_http(spec["url"], spec.get("ok"), insecure=spec.get("insecure", False))
+        return probe_http(spec["url"], spec.get("ok"), insecure=spec.get("insecure", False),
+                           contains=spec.get("contains"))
     if kind == "tls":
         return probe_tls(spec["host"], spec["port"], spec.get("sni"), spec.get("cafile"),
                          verify=spec.get("verify", True))

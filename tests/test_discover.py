@@ -249,5 +249,30 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(discover.classify([], "zzz", None, "qemu"), ("Virtual machine", "box"))
 
 
+
+
+class TlsCoverageTests(unittest.TestCase):
+    def test_every_tls_finding_gets_tls_probe(self):
+        for port in (443, 8443, 8006, 9443, 1234):
+            f = discover.Finding(port=port, kind="tls", product="TLS service")
+            spec = discover.check_for(101, "10.0.0.2", f, "web")
+            self.assertEqual(spec["kind"], "tls", f"port {port}")
+            self.assertEqual(spec["port"], port)
+
+    def test_plan_checks_passes_http_contains(self):
+        f = discover.Finding(port=80, kind="http", product="Web app", scheme="http")
+        guests = [{"vmid": 101, "name": "web", "ip": "10.0.0.2"}]
+        ov = {"http_contains": {"101:80": "Dashboard"}}
+        specs = discover.plan_checks({101: [f]}, guests, None, [], ov, None)
+        spec = next(s for s in specs if s["id"] == "101:80")
+        self.assertEqual(spec.get("contains"), "Dashboard")
+
+    def test_http_contains_unknown_id_ignored(self):
+        f = discover.Finding(port=80, kind="http", product="Web app", scheme="http")
+        guests = [{"vmid": 101, "name": "web", "ip": "10.0.0.2"}]
+        specs = discover.plan_checks({101: [f]}, guests, None, [], {"http_contains": {"999:99": "x"}}, None)
+        spec = next(s for s in specs if s["id"] == "101:80")
+        self.assertNotIn("contains", spec)
+
 if __name__ == "__main__":
     unittest.main()

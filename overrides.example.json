@@ -9,5 +9,8 @@
     {"id": "public-cert", "name": "Public HTTPS", "kind": "tls", "host": "192.168.1.11", "port": 443,
      "sni": "home.example.org", "target": 101}
   ],
-  "hide_checks": ["101:22"]
+  "hide_checks": ["101:22"],
+  "http_contains": {
+    "101:80": "Dashboard"
+  }
 }
