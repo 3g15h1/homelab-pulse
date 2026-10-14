@@ -34,7 +34,8 @@ import store as store_mod
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".svg": "image/svg+xml",
-                 ".webmanifest": "application/manifest+json", ".js": "text/javascript"}
+                 ".webmanifest": "application/manifest+json", ".js": "text/javascript",
+                 ".png": "image/png"}
 log = logging.getLogger("pulse")
 MAX_BODY = 64 * 1024
 HEALTH_SOURCES = ("pve", "probes", "discovery")

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 — 2026-10-14
+
+- **Installable app (PWA):** PNG icons (180/192/512 px plus a maskable 512 px) generated from the Pulse
+  icon, wired into the web manifest and the iOS touch icon; the server now serves  with the right
+  content type. Add the dashboard to the home screen from Safari/Chrome for a fullscreen app experience.
+
 ## 1.2.1 — 2026-10-14
 
 - **Settings page redesigned:** a "Right now" status strip; Notifications with per-channel health, last-delivery
