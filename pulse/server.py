@@ -40,7 +40,7 @@ log = logging.getLogger("pulse")
 MAX_BODY = 64 * 1024
 HEALTH_SOURCES = ("pve", "probes", "discovery")
 COOKIE = "pulse_session"
-MUTE_TARGET = re.compile(r"(check|guest|node|warn|backup|source):[\w.:/-]{1,120}")
+MUTE_TARGET = re.compile(r"(check|guest|node|warn|backup|source):[\w.:/@-]{1,120}")
 
 
 def _read_secret(path):
@@ -71,7 +71,9 @@ def build_collector(env=os.environ):
         st.put("admin", auth.hash_password("demo", iterations=1000))
         net = demo.DemoNet()
         st.put("config", {"heal": {"mode": "auto", "recipes": {}}})      # the demo shows healing in action
-        c = collect.Collector(demo.DemoPve(), "demo", net, probe_fn=net.probe, overrides_path=ov, ca_path=ca,
+        mini = demo.DemoPve(seed=11, nodes=demo.MINI_NODES, guests=demo.MINI_GUESTS, cluster=None)
+        pve = sources.MultiPve(demo.DemoPve(), [sources.ExtraHost("mini", 1, mini)])
+        c = collect.Collector(pve, "demo", net, probe_fn=net.probe, overrides_path=ov, ca_path=ca,
                               store=st, notifier=notify.Notifier(st, public_url),
                               heal=heal_mod.HealEngine(demo.DemoGate(net), st))
         c.demo, c.admin_ready = True, True
@@ -84,7 +86,11 @@ def build_collector(env=os.environ):
         sys.exit("PULSE_PVE=live but the token file is missing or empty")
     db = env.get("PULSE_DB") or str(Path(env.get("STATE_DIRECTORY", "/var/lib/homelab-pulse").split(":")[0]) / "pulse.db")
     st = store_mod.Store(db)
-    pve = sources.PveClient(host, int(env.get("PULSE_PVE_PORT", 8006)), token, ca, env.get("PULSE_PVE_TLS_NAME") or None)
+    primary = sources.PveClient(host, int(env.get("PULSE_PVE_PORT", 8006)), token, ca, env.get("PULSE_PVE_TLS_NAME") or None)
+    extras, errors = sources.load_hosts(env.get("PULSE_PVE_HOSTS_DIR", "/etc/homelab-pulse/hosts"))
+    for name, err in errors:
+        log.error("extra Proxmox host %s: %s", name, err)
+    pve = sources.MultiPve(primary, extras, errors)
     healer = None
     if env.get("PULSE_HEAL_GATE"):              # set by install.sh --enable-heal
         gate = gate_client.GateClient(env["PULSE_HEAL_GATE"], env.get("PULSE_HEAL_KEY", "/etc/homelab-pulse/heal_key"),
@@ -352,7 +358,7 @@ def make_handler(collector):
                 ok = all(src[k]["ok"] is not False for k in HEALTH_SOURCES if k in src)
                 return self._send(200 if ok else 503, {"ok": ok, "sources": src})
             if path.startswith("/api/history/"):
-                key = path[len("/api/history/"):]
+                key = urllib.parse.unquote(path[len("/api/history/"):])
                 hist = collector.history_for(int(key) if key.isdigit() else key) if "/" not in key else None
                 return self._send(200, hist) if hist else self._send(404, {"error": "unknown"})
             f = (STATIC / path.lstrip("/")).resolve()

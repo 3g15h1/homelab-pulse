@@ -57,6 +57,7 @@ class HealEngine:
         self.dry = {}             # check_id -> finished dry-run results waiting for poll()
         self.asks = {}            # check_id -> token
         self.tokens = {}          # token id -> binding
+        self.refused = {}         # check_id -> when the gate refused to inspect it (e.g. Pulse's own guest)
         self.lock = threading.Lock()
 
     # -- recipes and targets --
@@ -81,14 +82,19 @@ class HealEngine:
             t = self.store.get_target(s["check_id"])
             if t and t.get("learned_ts") and now - t["learned_ts"] < LEARN_EVERY:
                 continue
+            if now - self.refused.get(s["check_id"], -LEARN_EVERY) < LEARN_EVERY:
+                continue                     # a refusal (deny list, Pulse itself) won't change soon
             try:
                 r = self.gate.inspect(s["vmid"], s["port"])
             except gate_client.GateError as e:
                 self.gate_error = str(e)
                 return                       # gate down: try again next time
             if r.get("ok"):
+                self.refused.pop(s["check_id"], None)
                 self.store.put_target(s["check_id"], s["vmid"], s["port"], r.get("init"), r.get("unit"),
                                       r.get("container"), now)
+            else:
+                self.refused[s["check_id"]] = now
 
     def target_for(self, check_id):
         t = self.store.get_target(check_id) or {}

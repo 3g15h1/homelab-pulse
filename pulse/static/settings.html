@@ -557,7 +557,7 @@ function targetLabel(t) {
   if (!STATE) return t;
   const [kind, id] = t.split(/:(.+)/);
   if (kind === "node") { const n = STATE.nodes.find((x) => x.name === id); return n ? `Node ${n.name} (everything on it)` : t; }
-  if (kind === "guest") { const g = STATE.guests.find((x) => String(x.vmid) === id); return g ? `${g.name} (guest #${g.vmid})` : t; }
+  if (kind === "guest") { const g = STATE.guests.find((x) => String(x.vmid) === id); return g ? `${g.name} (guest #${g.pve_vmid ?? g.vmid}${g.host ? ` on ${g.host}` : ""})` : t; }
   if (kind === "check") { const p = STATE.probes.find((x) => x.id === id); return p ? `${p.name}${p.guest ? " on " + p.guest : ""}` : t; }
   return t;
 }
@@ -603,7 +603,7 @@ function muteTargets() {
   if (!STATE) return [];
   return [
     ...STATE.nodes.map((n) => [`node:${n.name}`, `Node ${n.name} (everything on it)`]),
-    ...STATE.guests.map((g) => [`guest:${g.vmid}`, `${g.name} (guest #${g.vmid})`]),
+    ...STATE.guests.map((g) => [`guest:${g.vmid}`, `${g.name} (guest #${g.pve_vmid ?? g.vmid}${g.host ? ` on ${g.host}` : ""})`]),
     ...STATE.probes.map((p) => [`check:${p.id}`, `${p.name}${p.guest ? " on " + p.guest : ""}`]),
   ];
 }

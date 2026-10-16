@@ -17,6 +17,7 @@ import overrides as overrides_mod
 import probes as probes_mod
 import recipes as recipes_mod
 import settings as settings_mod
+import sources
 import store as store_mod
 
 log = logging.getLogger("pulse")
@@ -77,7 +78,8 @@ def build_guests(resources, meta, rates, now):
         if not role:
             role, icon = catalog.guess_from_name(name, None, r["type"])
         guests.append({
-            "vmid": vmid, "type": r["type"], "name": name, "node": r.get("node"),
+            "vmid": vmid, "pve_vmid": int(r.get("pve_vmid", vmid)), "host": r.get("host"),
+            "type": r["type"], "name": name, "node": r.get("node"),
             "status": r.get("status", "unknown"), "running": running, "tags": tags,
             "role": role, "icon": icon or "box", "ip": m.get("ip"), "ips": list(m.get("ips", ())),
             "services": [f.view() for f in m.get("services", ())],
@@ -298,6 +300,11 @@ def build_conditions(snap, stopped, tasks, now, flap_hist=None):
         out.append({"key": "source:pve", "kind": "api_down", "severity": "critical",
                     "title": f"Pulse can't reach Proxmox ({(pve.get('error') or 'no answer')[:80]})",
                     "target": None, "node": None})
+    for h in pve.get("hosts", ()):
+        if h.get("ok") is False and not h.get("nodes"):       # with nodes, "node offline" says it
+            out.append({"key": f"source:pve:{h['label']}", "kind": "api_down", "severity": "critical",
+                        "title": f"Pulse can't reach Proxmox host {h['label']} ({(h.get('error') or 'no answer')[:80]})",
+                        "target": None, "node": None})
     for r in (snap.get("backups") or {}).get("runs", []):
         if not r.get("ok"):
             out.append({"key": f"backup:{r['node']}", "kind": "backup_failed", "severity": "critical",
@@ -440,16 +447,17 @@ class Collector:
         res = self.pve.resources()
         guests = build_guests(res, self.meta, self.rates, now)
         nodes = []
-        for r in sorted((r for r in res if r.get("type") == "node"), key=lambda r: r["node"]):
+        for r in sorted((r for r in res if r.get("type") == "node"), key=lambda r: (r.get("host") or "", r["node"])):
             nodes.append(self._node_view(r, [g for g in guests if g["node"] == r["node"]]))
         per_node, shared = build_storage(res, self.storage_content)
         running = {g["vmid"]: g["running"] for g in guests}
+        unknown = {g["vmid"] for g in guests if g["status"] == "unknown"}   # its node is offline: not a stop
         with self.cond:
             if self.prev_running is not None:      # a new guest, or one that just started: look soon
                 for vmid, up in running.items():
                     if up and not self.prev_running.get(vmid):
                         self.pending[vmid] = now + self.EARLY_DELAY
-                    if not up and self.prev_running.get(vmid):
+                    if not up and self.prev_running.get(vmid) and vmid not in unknown:
                         self.stopped[vmid] = now
                         if not _stop_explained(self.tasks_raw, vmid, now):
                             hist = self.flap_hist.setdefault(vmid, deque())
@@ -463,6 +471,8 @@ class Collector:
             self.prev_running = running
             self.resources, self.guests, self.nodes = res, guests, nodes
             self.storage, self.shared_storage = per_node, shared
+            if hasattr(self.pve, "host_status"):
+                self.sources["pve"]["hosts"] = self.pve.host_status()
             for n in nodes:
                 self._push_history(n["name"], now, n["cpu"], n["mem"] / (n["maxmem"] or 1), n["net_in"], n["net_out"])
             for g in guests:
@@ -471,7 +481,8 @@ class Collector:
 
     def _node_view(self, r, guests):
         name, online = r["node"], r.get("status") == "online"
-        view = {"name": name, "online": online, "ip": self.node_ips.get(name), "cpu": 0, "cpus": r.get("maxcpu") or 0,
+        view = {"name": name, "host": r.get("host"), "online": online, "ip": self.node_ips.get(name), "cpu": 0,
+                "cpus": r.get("maxcpu") or 0,
                 "model": "", "mem": 0, "maxmem": r.get("maxmem") or 0, "load": [], "uptime": 0, "pve": "",
                 "kernel": "", "net_in": sum(g["net_in"] for g in guests), "net_out": sum(g["net_out"] for g in guests),
                 "error": None}
@@ -539,7 +550,9 @@ class Collector:
                 if last["upid"] not in self.vzdump_logs:
                     self.vzdump_logs[last["upid"]] = parse_vzdump_log(x["t"] for x in self.pve.task_log(node, last["upid"]))
                 runs.append(last)
-                per_vm.update(self.vzdump_logs[last["upid"]])
+                uid = getattr(self.pve, "uid", None)
+                parsed = self.vzdump_logs[last["upid"]]
+                per_vm.update({uid(node, v): x for v, x in parsed.items()} if uid else parsed)
         keep = {r["upid"] for r in runs}
         self.vzdump_logs = {k: v for k, v in self.vzdump_logs.items() if k in keep}
         tasks = {t["upid"]: t for t in self.pve.tasks() + runs if t.get("upid")}   # de-duplicate
@@ -602,7 +615,7 @@ class Collector:
         if full and self.heal:                  # after the checks are published: this takes a while over SSH
             self.heal.learn([{"check_id": f"{g['vmid']}:{f.port}", "vmid": g["vmid"], "port": f.port,
                               "running": g["running"]}
-                             for g in guests for f in self.discoverer.services(g["vmid"])])
+                             for g in guests if not g.get("host") for f in self.discoverer.services(g["vmid"])])
 
     def poll_probes(self, pool=None):
         with self.cond:
@@ -713,7 +726,7 @@ class Collector:
         cfg = getattr(self, "_heal_cfg", None) or self.settings_loader().get("heal", {"mode": "off"})
         tgt = cond.get("target")
         guest = next((g for g in self.guests if g["vmid"] == tgt), None) if isinstance(tgt, int) else None
-        if not guest:
+        if not guest or guest.get("host"):      # the heal gate runs on the primary host only
             return None
         check = None
         if cond["kind"] == "service_down":
@@ -743,10 +756,10 @@ class Collector:
             version = self.heal.gate.version()
         except Exception as e:  # noqa: BLE001
             version = {"ok": False, "error": str(e)}
-        guests = {g["vmid"]: g for g in self.guests}
+        guests = {g["vmid"]: g for g in self.guests if not g.get("host")}     # the gate's host only
         targets = []
         for st in list(self.checks.values()):
-            if isinstance(st.spec.get("target"), int) and st.spec.get("port"):
+            if st.spec.get("target") in guests and st.spec.get("port"):
                 t = self.store.get_target(st.spec["id"]) or {}
                 targets.append({"check_id": st.spec["id"], "name": st.spec["name"], "guest": st.spec.get("guest"),
                                 "unit": t.get("unit"), "container": t.get("container"), "override": t.get("override")})
@@ -782,7 +795,7 @@ class Collector:
         import heal as heal_mod
         r = next((r for r in self.heal.recipes() if r["id"] == recipe_id), None)
         st = self.checks.get(check_id)
-        if not r or not st or not isinstance(st.spec.get("target"), int):
+        if not r or not st or not isinstance(st.spec.get("target"), int) or st.spec["target"] >= sources.UID_SPAN:
             return None
         target = self.heal.target_for(check_id) or {}
         return heal_mod.Decision(r, mode, check_id, f"check:{check_id}", st.spec["target"], st.spec.get("port"), target)
@@ -855,7 +868,8 @@ class Collector:
 
     def _load_overrides(self):
         try:
-            self.ov, self.ov_error = overrides_mod.load(self.overrides_path) if self.overrides_path else {}, None
+            ov = overrides_mod.load(self.overrides_path) if self.overrides_path else {}
+            self.ov, self.ov_error = overrides_mod.resolve_refs(ov, getattr(self.pve, "slots", {}), sources.UID_SPAN), None
         except overrides_mod.OverrideError as e:
             if str(e) != self.ov_error:
                 log.error("overrides: %s", e)
@@ -904,7 +918,8 @@ class Collector:
         guests = [{"vmid": g["vmid"], "name": g["name"], "ip": self.meta.get(g["vmid"], {}).get("ip")}
                   for g in self.guests]
         services = {k: self.discoverer.services(k) for k in list(self.discoverer.known)}
-        nodes = [{"name": n["name"], "ip": self.node_ips.get(n["name"])} for n in self.nodes]
+        meta = getattr(self.pve, "node_meta", lambda _n: {})
+        nodes = [{"name": n["name"], "ip": self.node_ips.get(n["name"]), **meta(n["name"])} for n in self.nodes]
         specs = discover.plan_checks(services, guests, self.router, nodes, self.ov, self.ca_path)
         new = {}
         for spec in specs:

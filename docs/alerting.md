@@ -10,11 +10,11 @@ every check is toggleable in the settings page.
 | Kind | What it watches | How it works |
 |---|---|---|
 | Internet unreachable | The lab's path to the internet | Built-in TCP probe to 1.1.1.1:443 |
-| Gateway not answering | Your router | Built-in ping probe to the discovered gateway IP |
+| Gateway not answering | Your router | Built-in ping probe to the discovered gateway IP (a TCP probe where the container may not ping) |
 | Lab DNS not resolving | Your lab's DNS server | Built-in DNS probe asking the gateway to resolve a real name |
 | A service stops answering | Every discovered TCP/HTTP/TLS service | Probes, debounced (2 failed rounds) |
-| A Proxmox node goes offline | Each cluster node | Node status from the Proxmox API |
-| Pulse can't reach Proxmox | The Proxmox API itself | API health |
+| A Proxmox node goes offline | Each cluster node, and each separate host added with `--add-host` | Node status from the Proxmox API; for a separate host, its API not answering |
+| Pulse can't reach Proxmox | The Proxmox API itself (and a separate host never reached since Pulse started) | API health |
 | A guest stops unexpectedly | Every VM/container | Stops correlated against the Proxmox task list, so your own shutdowns don't alert |
 | Guest keeps restarting | Flapping guests | 3 unexplained stops within an hour → one summary alert instead of stop/start pairs |
 | New service appeared | New open ports | Discovery baseline; the first scan seeds silently |

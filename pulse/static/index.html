@@ -546,17 +546,18 @@ async function renderDrawer() {
     ["Status", n.online ? "online" : "offline"], ["Address", esc(n.ip || "—")],
     ["CPU", `${pct(n.cpu)} of ${n.cpus} threads`], ["Memory", `${fmtBytes(n.mem)} / ${fmtBytes(n.maxmem)}`],
     ["Load", n.load.map((x) => x.toFixed(2)).join("  ") || "—"], ["Uptime", fmtUp(n.uptime)], ["Version", n.pve ? `PVE ${esc(n.pve)}` : "—"],
+    ...(n.host ? [["Host", `${esc(n.host)} <span class="faint">(separate Proxmox host)</span>`]] : []),
     ["Kernel", esc(n.kernel || "—")], ["Guests", `${S.guests.filter((x) => x.node === n.name && x.running).length} running of ${S.guests.filter((x) => x.node === n.name).length}`],
   ] : [
     ["Status", g.running ? "running" : esc(g.status)], ["Address", esc((g.ips && g.ips.length ? g.ips : [g.ip || "—"]).join(", "))],
-    ["Node", esc(g.node)], ["Type", g.type === "qemu" ? "VM" : "Container"],
+    ["Node", esc(g.node) + (g.host && g.host !== g.node ? ` <span class="faint">on host ${esc(g.host)}</span>` : "")], ["Type", g.type === "qemu" ? "VM" : "Container"],
     ["CPU", `${pct(g.cpu)} of ${g.cores} core${g.cores === 1 ? "" : "s"}`], ["Memory", `${fmtBytes(g.mem)} / ${fmtBytes(g.maxmem)}`],
     ["Disk", !g.maxdisk ? "—" : g.disk ? `${fmtBytes(g.disk)} / ${fmtBytes(g.maxdisk)}` : `${fmtBytes(g.maxdisk)} allocated`], ["Network", `↓ ${fmtRate(g.net_in)}  ↑ ${fmtRate(g.net_out)}`],
     ["Uptime", fmtUp(g.uptime)], ["Last backup", bk?.ts ? `${ago(bk.ts, S.now)} · ${fmtBytes(bk.size)}` : "none yet"],
     ...(g.services && g.services.length ? [["Services", g.services.map((x) => `${esc(x.product)} <span class="faint">:${x.port}</span>`).join("<br>")]] : []),
     ...(g.tags && g.tags.length ? [["Tags", g.tags.map(esc).join(", ")]] : []),
   ];
-  body.innerHTML = `<h3>${esc(isNode ? n.name : g.name)} <span class="faint" style="font-weight:450;font-size:13px">${isNode ? "" : "#" + g.vmid}</span></h3>
+  body.innerHTML = `<h3>${esc(isNode ? n.name : g.name)} <span class="faint" style="font-weight:450;font-size:13px">${isNode ? "" : "#" + (g.pve_vmid ?? g.vmid)}</span></h3>
     <div class="muted">${isNode ? esc(n.model) : esc(g.role)}</div>
     <dl class="kv num">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
     ${ranges}
@@ -595,12 +596,13 @@ function storageRows(list) {
     return `<div class="row mini"><span>${esc(s.id)}</span><span class="muted num">${fmtBytes(s.used)} / ${fmtBytes(s.total)}</span></div><div class="bar${f > 0.85 ? " hi" : ""}"><i style="width:${(f * 100).toFixed(1)}%"></i></div>`; }).join("");
 }
 function nodeBlock(n, multi) {
-  if (!n.online) return `<div class="nodeblk off"><h4>${esc(n.name)} <span class="tag">offline</span></h4></div>`;
+  const hostTxt = n.host && n.host !== n.name ? ` <span class="faint" style="font-weight:450">host ${esc(n.host)}</span>` : "";
+  if (!n.online) return `<div class="nodeblk off"><h4>${esc(n.name)}${hostTxt} <span class="tag">offline</span></h4></div>`;
   const guests = S.guests.filter((g) => g.node === n.name), running = guests.filter((g) => g.running).length;
   const memf = n.mem / (n.maxmem || 1);
   const disks = n.disks.map((d) => { const okh = /PASSED|OK/i.test(d.health);
     return `<div class="row mini" style="padding:3px 0"><span>${esc(d.model)} <span class="faint">${esc(d.type.toUpperCase())}</span></span><span class="${okh ? "muted" : ""}" style="${okh ? "" : "color:var(--bad)"}">${okh ? "healthy" : esc(d.health)}${d.wear_used != null ? ` · ${d.wear_used}% worn` : ""}</span></div>`; }).join("");
-  return `<div class="nodeblk">${multi ? `<h4>${esc(n.name)} <span class="faint" style="font-weight:450">${esc(n.ip || "")}</span>${n.error ? ` <span style="color:var(--bad);font-weight:450">${esc(n.error)}</span>` : ""}</h4>` : ""}
+  return `<div class="nodeblk">${multi ? `<h4>${esc(n.name)}${hostTxt} <span class="faint" style="font-weight:450">${esc(n.ip || "")}</span>${n.error ? ` <span style="color:var(--bad);font-weight:450">${esc(n.error)}</span>` : ""}</h4>` : ""}
     <div class="row"><div><div class="big num">${pct(n.cpu)}</div><div class="muted mini">CPU · ${n.cpus} threads</div></div>
       <div style="text-align:right"><div class="big num">${fmtBytes(n.mem).replace(" ", "<small style='font-size:15px;color:var(--dim)'> ")}</small></div><div class="muted mini">of ${fmtBytes(n.maxmem)} RAM</div></div></div>
     <div class="hostSpark">${sparkSvg(n.cpu_history, { w: 300, h: 54, max: Math.max(0.25, ...n.cpu_history), id: "hs" + n.name.replace(/\W/g, "") })}</div>
@@ -612,11 +614,15 @@ function nodeBlock(n, multi) {
 }
 function renderHost() {
   const src = S.sources.pve, multi = S.nodes.length > 1, pve = S.nodes.find((n) => n.pve)?.pve;
-  $("hostTitle").firstChild.textContent = multi ? `Proxmox cluster · ${S.nodes.length} nodes ` : "Proxmox host ";
+  const extra = src.hosts || [], hosts = 1 + extra.length;
+  $("hostTitle").firstChild.textContent = hosts > 1 ? `Proxmox · ${hosts} hosts${S.nodes.length > hosts ? ` · ${S.nodes.length} nodes` : ""} `
+    : multi ? `Proxmox cluster · ${S.nodes.length} nodes ` : "Proxmox host ";
   $("hostTag").outerHTML = `<span id="hostTag" class="tag${src.mode === "demo" ? " demo" : ""}">${src.mode === "demo" ? "demo data" : (pve ? `PVE ${esc(pve)}` : "")}</span>`;
   if (!S.nodes.length) { $("hostBody").innerHTML = `<span class="muted">${esc(src.error || "Waiting for Proxmox…")}</span>`; return; }
   const shared = (S.shared_storage || []).length ? `<div class="nodeblk"><h4>Shared storage</h4>${storageRows(S.shared_storage)}</div>` : "";
-  $("hostBody").innerHTML = S.nodes.map((n) => nodeBlock(n, multi)).join("") + shared;
+  const unreached = extra.filter((h) => h.ok === false && !h.nodes.length)       // never answered since Pulse started
+    .map((h) => `<div class="nodeblk off"><h4>${esc(h.label)} <span class="tag">unreachable</span></h4><div class="muted mini">${esc(h.error || "")}</div></div>`).join("");
+  $("hostBody").innerHTML = S.nodes.map((n) => nodeBlock(n, multi)).join("") + unreached + shared;
 }
 
 function renderServices() {
@@ -669,7 +675,7 @@ function renderChrome() {
   const src = S.sources, demo = src.pve.mode === "demo";
   $("nodeName").textContent = S.nodes.length === 1 ? `${S.nodes[0].name} · homelab` : S.nodes.length ? `${S.nodes.length} nodes · homelab` : "homelab";
   $("banner").classList.toggle("show", demo);
-  $("bannerText").innerHTML = demo ? "<b>Demo mode:</b> a simulated two-node cluster (PULSE_PVE=demo). Set PULSE_PVE=live to watch your own lab." : "";
+  $("bannerText").innerHTML = demo ? "<b>Demo mode:</b> a simulated two-node cluster plus a separate second host (PULSE_PVE=demo). Set PULSE_PVE=live to watch your own lab." : "";
   $("mapTag").style.display = src.pve.mode === "demo" ? "" : "none"; $("mapTag").className = "tag demo"; $("mapTag").textContent = "demo data";
   const parts = Object.entries(src).map(([k, s]) => {
     const label = { pve: "Proxmox", probes: "Health checks", discovery: "Discovery", store: "History", alerts: "Alerts", heal: "Self-healing" }[k] || k;

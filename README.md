@@ -71,6 +71,35 @@ every 15 s   run the health checks, 8 at a time; a check turns red after 2 failu
 - A service has to be missing from **two scans in a row** before it is dropped, so a guest that reboots
   during a scan doesn't lose its checks. Checks for a stopped guest are paused (grey), not red.
 - **Clusters:** every node gets its own hub on the map and its own panel. Guests move with migrations.
+  Separate hosts that aren't in the cluster can be added too (see below).
+
+## More than one Proxmox host
+
+A **cluster** needs nothing extra: Pulse sees every node through any one of them. A **separate host**
+(a second server that isn't in the cluster) is added once, from the host that runs Pulse:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/3g15h1/homelab-pulse/main/install.sh)" install.sh --add-host 192.168.1.70
+```
+
+This logs in to `root@192.168.1.70` over SSH once (it may ask for that host's root password). On that host it
+creates the same read-only `pulse@pve` user (role **PVEAuditor**) and a token for this Pulse. It then copies
+the token and that host's CA into the Pulse container. There's no SSH between the two hosts? Run the
+installer with `--extra-host` on the other host instead. It prints a `pulse-host:…` line; pass that line
+to `--add-host` in place of the IP.
+
+- **On the dashboard** the other host is one more node: its own hub on the map, a panel, health checks,
+  backups, early warnings and history, like a cluster node.
+- **Same VMIDs on both hosts** are fine. Pulse keys guests per host, and shows each guest's real VMID.
+  In `overrides.json`, name a guest on the other host as `<host>/<vmid>`, e.g. `"guests": {"gpu/100": {…}}`
+  or `"hide_checks": ["gpu/100:22"]`.
+- **Node names** stay as they are. If both hosts are called `pve`, the second one shows as `pve@<host>`.
+- **If that host goes down,** its node shows offline and its guests' alerts are held, as for a cluster node.
+  Pulse keeps working for everything else.
+- **Self-healing** stays limited to the host the gate is installed on.
+- `--label NAME` sets the name Pulse uses for the host (default: its node name). `--list-hosts` shows
+  the hosts Pulse watches. `--remove-host NAME` disconnects one; the token on that host is kept, and the
+  command prints how to delete it there.
 
 ## Alerts
 
@@ -211,6 +240,7 @@ Precedence: guest tags, then `overrides.json`, then discovery, then a guess from
 
 `/etc/homelab-pulse/env` (see `env.example`): `PULSE_PVE` (`live` or `demo`), `PULSE_PVE_HOST`,
 `PULSE_PVE_PORT`, `PULSE_PVE_TOKEN_FILE`, `PULSE_PVE_CA`, `PULSE_PVE_TLS_NAME` (rarely needed),
+`PULSE_PVE_HOSTS_DIR` (separate hosts, default `/etc/homelab-pulse/hosts`, written by `--add-host`),
 `PULSE_OVERRIDES`, `PULSE_DB`, `PULSE_ADMIN_PASSWORD_FILE`, `PULSE_PUBLIC_URL` (the link used in
 notifications), `PULSE_PORT`, `PULSE_BIND`, `PULSE_LOG`. Restart after editing:
 `systemctl restart homelab-pulse`.
@@ -224,7 +254,7 @@ Routes: `/` UI, `/settings`, `/api/state` JSON snapshot, `/api/stream` Server-Se
 
 ```bash
 git clone https://github.com/3g15h1/homelab-pulse && cd homelab-pulse
-PULSE_PORT=8765 python3 pulse/server.py     # demo mode: a simulated two-node cluster (settings password: demo)
+PULSE_PORT=8765 python3 pulse/server.py     # demo mode: a two-node cluster + a separate host (settings password: demo)
 ```
 
 Python 3.11+ standard library only. There's nothing to `pip install`.
@@ -239,6 +269,10 @@ Python 3.11+ standard library only. There's nothing to `pip install`.
    `/etc/pve/pve-root-ca.pem` to `/etc/homelab-pulse/pve-ca.pem`, and write `/etc/homelab-pulse/env` from
    `env.example` with `PULSE_PVE=live` and `PULSE_PVE_HOST=<node IP>`.
 4. `systemctl daemon-reload && systemctl enable --now homelab-pulse`
+5. Optional, a separate host: on it, create the same user and a token. Then put
+   `{"label": "gpu", "slot": 1, "host": "<its IP>", "token": "pulse@pve!<id>=<secret>"}` in
+   `/etc/homelab-pulse/hosts/gpu.json` (mode 640, group pulse) and that host's CA in `gpu-ca.pem` next to it.
+   Give every host its own `slot` number and never reuse one: guests are keyed by it.
 
 ## Security and privacy
 

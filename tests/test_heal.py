@@ -94,6 +94,20 @@ class LearnTests(unittest.TestCase):
         self.assertIn("ssh", h.gate_error)
 
 
+    def test_learn_remembers_refusals_for_an_hour(self):
+        # the gate refuses Pulse's own guest; asking again every discovery pass just fills its log
+        g = FakeGate(inspect={(110, 80): {"ok": False, "error": "refusing to act on Pulse's own guest"}})
+        h, st, clock = make(g)
+        svc = [{"check_id": "110:80", "vmid": 110, "port": 80, "running": True}]
+        h.learn(svc)
+        clock[0] += 300
+        h.learn(svc)
+        self.assertEqual(g.inspects, [(110, 80)])
+        self.assertIsNone(st.get_target("110:80"))
+        clock[0] += 3600
+        h.learn(svc)
+        self.assertEqual(len(g.inspects), 2)
+
 class DecideTests(unittest.TestCase):
     def setUp(self):
         self.h, self.st, self.clock = make()

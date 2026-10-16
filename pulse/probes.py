@@ -225,18 +225,45 @@ def probe_dns(server, qname, timeout=3.0, port=53):
     return Result(True, latency, "blocking ads" if blocked else "answering (not blocking)")
 
 
+PING_TCP_PORTS = (53, 80, 443)    # a router answers on one of these, or at least refuses
+
+
+def _not_permitted(cp):
+    err = (cp.stderr or b"").decode("utf-8", "replace").lower()
+    return cp.returncode == 2 and ("not permitted" in err or "cap_net_raw" in err or "permission" in err)
+
+
+def probe_alive_tcp(host, ports=PING_TCP_PORTS, timeout=2.0):
+    """Is the host there at all? A TCP connect that is accepted *or refused* proves it is; only
+    silence (timeout, unreachable) means it isn't. For when ICMP isn't allowed."""
+    t0 = time.perf_counter()
+    for port in ports:
+        try:
+            with socket.create_connection((host, port), timeout):
+                return Result(True, _ms(t0), f"answering on TCP {port} (ping not permitted)")
+        except ConnectionRefusedError:
+            return Result(True, _ms(t0), f"answering (TCP {port} refused; ping not permitted)")
+        except OSError:
+            continue
+    return Result(False, None, "no reply (TCP; ping not permitted)")
+
+
 def probe_ping(host, timeout=2.0):
-    """One ICMP echo via the system ping binary (no raw sockets needed)."""
+    """One ICMP echo via the system ping binary (no raw sockets needed). Where the service user may
+    not ping (no cap_net_raw on the binary and outside net.ipv4.ping_group_range, as in some
+    unprivileged containers) it falls back to a TCP liveness check instead of reporting "down"."""
     t0 = time.perf_counter()
     try:
         cp = subprocess.run(["ping", "-c1", "-W%d" % max(1, round(timeout)), host],
                             capture_output=True, timeout=timeout + 5)
     except FileNotFoundError:
-        return Result(False, None, "ping binary not found")
+        return probe_alive_tcp(host, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         return Result(False, None, _short(e))
     if cp.returncode == 0:
         return Result(True, _ms(t0), "ping ok")
+    if _not_permitted(cp):
+        return probe_alive_tcp(host, timeout=timeout)
     return Result(False, None, "no reply")
 
 

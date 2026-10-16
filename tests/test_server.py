@@ -49,7 +49,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(b"<title>", body)
         state = json.loads(self.get("/api/state")[2])
-        self.assertEqual([n["name"] for n in state["nodes"]], ["pve1", "pve2"])
+        self.assertEqual([n["name"] for n in state["nodes"]], ["pve1", "pve2", "mini"])   # mini: a second host
         self.assertIn("discovery", state["sources"])
 
     def test_healthz_and_history(self):
@@ -57,6 +57,9 @@ class ServerTests(unittest.TestCase):
         code, _, body = self.get("/api/history/200")
         self.assertEqual((code, len(json.loads(body)["cpu"])), (200, 1))
         self.assertEqual(self.get("/api/history/pve2")[0], 200)
+        self.assertEqual(self.get("/api/history/1000000100")[0], 200)     # a guest on the demo's second host
+        self.assertEqual(self.get("/api/history/mini")[0], 200)
+        self.assertEqual(self.get("/api/history/%2e%2e%2fetc")[0], 404)
         self.assertEqual(self.get("/api/history/../etc")[0], 404)
 
     def test_history_unknown_node_404(self):

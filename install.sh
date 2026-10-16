@@ -11,6 +11,7 @@ set -euo pipefail
 REPO="3g15h1/homelab-pulse"
 REF="main"
 VMID="" STORAGE="" BRIDGE="vmbr0" IP="dhcp" GW="" SRC="" ROTATE=0 DRY=0 SHOW_PW=0 HEAL="" UPDATES=0
+HOSTOP="" HOSTARG="" LABEL=""
 APP=/opt/homelab-pulse
 ETC=/etc/homelab-pulse
 TAG=homelab-pulse
@@ -32,6 +33,15 @@ Usage: install.sh [options]
   --show-password   print the existing admin password for the settings page
   --enable-heal     set up self-healing: the pulse-heal-gate on this host + a restricted SSH key for Pulse
   --disable-heal    remove self-healing (gate, key); keeps your recipes in /etc/pulse-heal/recipes.d
+
+ More Proxmox hosts (ones that aren't in this host's cluster):
+  --add-host IP     connect Pulse to another Proxmox host: logs in to root@IP over SSH once to
+                    create a read-only token there. Without SSH, run --extra-host on that host and
+                    pass the line it prints instead of the IP:  --add-host 'pulse-host:...'
+  --label NAME      what Pulse calls that host (default: its node name); NAME/<vmid> in overrides.json
+  --remove-host NAME   disconnect a host added with --add-host
+  --list-hosts      list the hosts Pulse watches besides this one
+  --extra-host      run on the *other* host: create the read-only token, print the line for --add-host
   --dry-run         print every change instead of making it
   -h, --help        this help
 EOF
@@ -51,6 +61,11 @@ while [ $# -gt 0 ]; do
     --show-password) SHOW_PW=1; shift ;;
     --enable-heal) [ "$HEAL" = disable ] && { echo "Choose --enable-heal or --disable-heal" >&2; exit 2; }; HEAL=enable; shift ;;
     --disable-heal) [ "$HEAL" = enable ] && { echo "Choose --enable-heal or --disable-heal" >&2; exit 2; }; HEAL=disable; shift ;;
+    --add-host) HOSTOP=add; HOSTARG=${2:-}; shift 2 ;;
+    --remove-host) HOSTOP=remove; HOSTARG=${2:-}; shift 2 ;;
+    --list-hosts) HOSTOP=list; shift ;;
+    --extra-host) HOSTOP=extra; shift ;;
+    --label) LABEL=$2; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -88,9 +103,165 @@ HOST_IP=$(pvesh get /cluster/status --output-format json |
   json_get 'next((e.get("ip") or "") for e in d if e.get("type") == "node" and e.get("local"))')
 [ -n "$HOST_IP" ] || die "could not work out this node's IP from /cluster/status"
 
-# ------------------------------------------------------------------ source
+# ------------------------------------------------------------------ more Proxmox hosts
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+HOSTS_DIR=$ETC/hosts
+has_tag() { pct config "$1" 2>/dev/null | grep -qE "^tags:.*\b$TAG\b"; }
+find_pulse() {   # VMID of the Pulse container on this host (--vmid, or the tagged one)
+  if [ -n "$VMID" ]; then pct config "$VMID" >/dev/null 2>&1 || die "CT $VMID doesn't exist"; return; fi
+  for id in $(pct list | awk 'NR>1 {print $1}'); do
+    if has_tag "$id"; then VMID=$id; return; fi
+  done
+  die "no Homelab Pulse container on this host (install Pulse first, or pass --vmid)"
+}
+# Runs on the other host (locally for --extra-host, over SSH for --add-host IP): a read-only
+# pulse@pve user and token there, printed with that host's address, node name and CA as one line.
+cat > "$WORK/extra-host.sh" <<'REMOTE'
+set -eu
+TID=$1 USER=pulse@pve
+command -v pveum >/dev/null || { echo "Error: not a Proxmox VE host" >&2; exit 1; }
+pveum user list --output-format json |
+  python3 -c 'import json,sys; sys.exit(0 if any(u["userid"] == "pulse@pve" for u in json.load(sys.stdin)) else 1)' ||
+  pveum user add "$USER" --comment "Homelab Pulse (read-only dashboard)" >&2
+pveum acl modify / --users "$USER" --roles PVEAuditor >&2
+if pveum user token list "$USER" --output-format json 2>/dev/null |
+     python3 -c 'import json,sys; sys.exit(0 if any(t["tokenid"] == sys.argv[1] for t in json.load(sys.stdin)) else 1)' "$TID"; then
+  pveum user token remove "$USER" "$TID" >&2
+fi
+umask 077
+T=$(mktemp)
+trap 'rm -f "$T"' EXIT
+pveum user token add "$USER" "$TID" --privsep 0 --output-format json > "$T"
+pvesh get /cluster/status --output-format json | python3 -c '
+import base64, json, sys
+tok = json.load(open(sys.argv[1]))
+node = next(e for e in json.load(sys.stdin) if e.get("type") == "node" and e.get("local"))
+d = {"host": node["ip"], "port": 8006, "node": node["name"], "token": "pulse@pve!" + sys.argv[2] + "=" + tok["value"],
+     "ca": open("/etc/pve/pve-root-ca.pem").read()}
+print("pulse-host:" + base64.urlsafe_b64encode(json.dumps(d).encode()).decode())' "$T" "$TID"
+REMOTE
+
+if [ "$HOSTOP" = extra ]; then
+  TID=pulse-remote
+  if [ "$DRY" = 1 ]; then
+    echo "+ pveum user add $PVE_USER (if missing); pveum acl modify / --users $PVE_USER --roles PVEAuditor"
+    echo "+ pveum user token add $PVE_USER $TID --privsep 0   (printed as a pulse-host: line)"
+    say "Dry run: nothing was changed."; exit 0
+  fi
+  say "Creating a read-only token for Pulse on this host ($PVE_USER!$TID, role PVEAuditor)"
+  LINE=$(bash "$WORK/extra-host.sh" "$TID")
+  cat <<EOF
+
+  On the Proxmox host that runs Pulse, run the installer with:
+
+    --add-host '$LINE'
+
+  (It contains the token's secret: don't paste it anywhere public.)
+EOF
+  exit 0
+fi
+
+if [ -n "$HOSTOP" ]; then
+  find_pulse
+  [ "$DRY" = 1 ] || [ "$(pct status "$VMID" | awk '{print $2}')" = running ] || die "CT $VMID isn't running"
+  hosts_json() {   # the hosts Pulse has, one JSON object per line
+    pct exec "$VMID" -- sh -c "for f in $HOSTS_DIR/*.json; do [ -f \"\$f\" ] && tr -d '\n' < \"\$f\" && echo; done; true"
+  }
+  case "$HOSTOP" in
+  list)
+    LIST=$(hosts_json)
+    if [ -z "$LIST" ]; then say "Pulse in CT $VMID watches only this host's cluster."; exit 0; fi
+    printf '%s\n' "$LIST" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    if line.strip():
+        h = json.loads(line)
+        print("  %-16s %-16s node %-12s slot %s" % (h["label"], h["host"], h.get("tls_name") or "?", h["slot"]))'
+    exit 0 ;;
+  remove)
+    [ -n "$HOSTARG" ] || die "--remove-host needs the host's name (see --list-hosts)"
+    H=$(hosts_json | python3 -c '
+import json, sys
+for line in sys.stdin:
+    if line.strip() and json.loads(line)["label"] == sys.argv[1]:
+        h = json.loads(line); print(h["host"], h["token"].split("=")[0].split("!")[1])' "$HOSTARG")
+    [ -n "$H" ] || die "Pulse has no host called '$HOSTARG' (see --list-hosts)"
+    say "Disconnecting $HOSTARG"
+    in_ct "rm -f $HOSTS_DIR/$HOSTARG.json $HOSTS_DIR/$HOSTARG-ca.pem && systemctl restart homelab-pulse"
+    say "Its read-only token still exists on ${H% *}; to delete it, run there:  pveum user token remove $PVE_USER ${H#* }"
+    if [ "$DRY" = 1 ]; then say "Dry run: nothing was changed."; fi
+    exit 0 ;;
+  add)
+    umask 077                          # the files below hold the other host's token
+    [ -n "$HOSTARG" ] || die "--add-host needs the other host's IP, or the pulse-host: line from --extra-host there"
+    case "$HOSTARG" in
+    pulse-host:*) LINE=$HOSTARG ;;
+    *)
+      if [ "$DRY" = 1 ]; then
+        echo "+ ssh root@$HOSTARG: pveum user add $PVE_USER; acl PVEAuditor; pveum user token add $PVE_USER pulse-ct$VMID --privsep 0"
+        LINE=""
+      else
+        say "Creating a read-only token on $HOSTARG (you may be asked for its root password once)"
+        LINE=$(ssh -o StrictHostKeyChecking=accept-new "root@$HOSTARG" bash -s -- "pulse-ct$VMID" < "$WORK/extra-host.sh") ||
+          die "couldn't set up $HOSTARG over SSH; run 'install.sh --extra-host' there and pass the line it prints"
+      fi ;;
+    esac
+    if [ -n "$LINE" ]; then
+      printf '%s' "${LINE#pulse-host:}" | python3 -c '
+import base64, json, sys
+d = json.loads(base64.urlsafe_b64decode(sys.stdin.read().strip() + "=="))
+for k in ("host", "node", "token", "ca"):
+    assert d.get(k), k
+json.dump(d, open(sys.argv[1], "w"))' "$WORK/new.json" 2>/dev/null || die "that pulse-host: line is damaged; copy it again"
+    else      # dry run with an IP: nothing was created over there, so describe a placeholder
+      printf '{"host": "%s", "port": 8006, "node": "pve", "token": "pulse@pve!pulse-ct%s=<secret>", "ca": "<ca>"}' \
+        "$HOSTARG" "$VMID" > "$WORK/new.json"
+    fi
+    NEW_IP=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["host"])' "$WORK/new.json")
+    if pvesh get /cluster/status --output-format json |
+         json_get '"\n".join(e.get("ip") or "" for e in d if e.get("type") == "node")' | grep -qxF "$NEW_IP"; then
+      die "$NEW_IP is a node of this cluster; Pulse already watches it"
+    fi
+    hosts_json > "$WORK/have.jsonl"
+    python3 - "$WORK/new.json" "$WORK/have.jsonl" "$LABEL" "$WORK" <<'PY' || exit 1
+import json, re, sys
+new, have_file, label, work = sys.argv[1:5]
+d = json.load(open(new))
+have = [json.loads(line) for line in open(have_file) if line.strip()]
+label = (label or re.sub(r"[^a-z0-9-]+", "-", d["node"].lower())).strip("-")[:31]
+if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,30}", label):
+    sys.exit(f"Error: --label must be lowercase letters, digits and dashes (got {label!r})")
+same = next((h for h in have if h["label"] == label), None)
+other = next((h for h in have if h["host"] == d["host"] and h["label"] != label), None)
+if other:
+    sys.exit(f"Error: {d['host']} is already connected as {other['label']!r} (--remove-host {other['label']} first)")
+slot = same["slot"] if same else max([h["slot"] for h in have] + [0]) + 1     # re-adding keeps the slot
+json.dump({"label": label, "slot": slot, "host": d["host"], "port": d.get("port", 8006), "token": d["token"],
+           "tls_name": d["node"]}, open(f"{work}/host.json", "w"), indent=1)
+open(f"{work}/host-ca.pem", "w").write(d["ca"])
+PY
+    read -r HLABEL HSLOT HNODE < <(python3 -c 'import json,sys; h=json.load(open(sys.argv[1])); print(h["label"], h["slot"], h["tls_name"])' "$WORK/host.json")
+    say "Connecting $HLABEL ($NEW_IP, node $HNODE, slot $HSLOT) to Pulse in CT $VMID"
+    in_ct "install -d -m 750 -o root -g pulse $HOSTS_DIR"
+    run pct push "$VMID" "$WORK/host.json" "$HOSTS_DIR/$HLABEL.json" --perms 640 --group pulse
+    run pct push "$VMID" "$WORK/host-ca.pem" "$HOSTS_DIR/$HLABEL-ca.pem" --perms 644
+    in_ct "python3 -c 'import socket,sys; socket.create_connection((sys.argv[1], 8006), 5)' $NEW_IP" ||
+      say "Warning: CT $VMID can't reach $NEW_IP:8006 right now; Pulse will keep trying"
+    in_ct "systemctl restart homelab-pulse"
+    if [ "$DRY" = 1 ]; then say "Dry run: nothing was changed."; exit 0; fi
+    cat <<EOF
+
+  $HLABEL is connected. Its node and guests show up on the dashboard within a minute.
+  In overrides.json, refer to its guests as $HLABEL/<vmid> (e.g. "$HLABEL/100"): their VMIDs may repeat this host's.
+  Self-healing stays limited to this host's guests.
+  Disconnect:  install.sh --remove-host $HLABEL
+EOF
+    exit 0 ;;
+  esac
+fi
+
+# ------------------------------------------------------------------ source
 if [ -z "$SRC" ] && [ -f "$(dirname "$0")/pulse/server.py" ]; then SRC=$(cd "$(dirname "$0")" && pwd); fi
 if [ -z "$SRC" ]; then
   say "Downloading $REPO@$REF"
@@ -100,7 +271,6 @@ fi
 [ -f "$SRC/pulse/server.py" ] || die "no Pulse source found in $SRC"
 
 # ------------------------------------------------------------------ new or upgrade?
-has_tag() { pct config "$1" 2>/dev/null | grep -qE "^tags:.*\b$TAG\b"; }
 UPGRADE=0
 if [ -n "$VMID" ] && pct config "$VMID" >/dev/null 2>&1; then
   UPGRADE=1
@@ -153,6 +323,8 @@ fi
 run pveum acl modify / --users "$PVE_USER" --roles "$PVE_ROLES"
 
 in_ct "id pulse >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin pulse; install -d -m 750 -o root -g pulse $ETC"
+# Let the service user ping (unprivileged ICMP, for the gateway check) without raw-socket rights.
+in_ct 'g=$(getent group pulse | cut -d: -f3); printf "net.ipv4.ping_group_range = %s %s\n" "$g" "$g" > /etc/sysctl.d/60-homelab-pulse-ping.conf; sysctl -q -p /etc/sysctl.d/60-homelab-pulse-ping.conf 2>/dev/null || true'
 
 TOKEN_ID="ct$VMID"   # one token per container, so a second install never touches another's token
 HAVE_TOKEN=0

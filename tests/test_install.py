@@ -32,6 +32,7 @@ esac''',
     esac ;;
   status) echo "status: running" ;;
   exec) case "$*" in
+      *"hosts/*.json"*) if [ -n "$HOSTS" ]; then printf '%s\n' "$HOSTS"; fi ;;
       *"admin-password"*"cat"*|*"cat"*"admin-password"*) echo "old-pass-1234" ;;
       *"test -s"*"admin-password"*) if [ -n "$ADMINPW" ]; then exit 0; else exit 1; fi ;;
       *"test -s"*) exit 0 ;; *"grep -q PULSE_PVE_HOST"*) exit 1 ;; *) exit 0 ;; esac ;;
@@ -174,3 +175,90 @@ class InstallWithUpdatesTests(unittest.TestCase):
         self.assertNotIn("PulseUpdates", r.stdout)
         self.assertNotIn("Sys.Modify", r.stdout)
         self.assertIn("--roles PVEAuditor", r.stdout)
+
+
+def host_line(**kw):
+    import base64
+    import json
+    d = dict({"host": "192.168.1.70", "port": 8006, "node": "Pve-GPU", "token": "pulse@pve!pulse-ct110=s3cret",
+              "ca": "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n"}, **kw)
+    return "pulse-host:" + base64.urlsafe_b64encode(json.dumps(d).encode()).decode()
+
+
+class InstallHostsTests(unittest.TestCase):
+    def run_install(self, *args, env_extra=None):
+        return InstallDryRunTests().run_install(*args, env_extra=env_extra)
+
+    def test_extra_host_needs_no_container(self):
+        r = self.run_install("--extra-host")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("pveum user token add pulse@pve pulse-remote --privsep 0", r.stdout)
+        self.assertNotIn("pct", r.stdout)
+        self.assertNotIn("UNEXPECTED", r.stderr)
+
+    def test_add_host_from_line(self):
+        r = self.run_install("--add-host", host_line(), env_extra={"TAGGED": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        out = r.stdout
+        self.assertIn("Connecting pve-gpu (192.168.1.70, node Pve-GPU, slot 1) to Pulse in CT 110", out)
+        self.assertIn("/etc/homelab-pulse/hosts/pve-gpu.json --perms 640 --group pulse", out)
+        self.assertIn("/etc/homelab-pulse/hosts/pve-gpu-ca.pem --perms 644", out)
+        self.assertIn("systemctl\\ restart\\ homelab-pulse", out)
+        self.assertNotIn("s3cret", out)                                  # the secret goes in a file, not the log
+        self.assertNotIn("pct create", out)
+        self.assertNotIn("Downloading", out)
+
+    def test_add_host_label_and_next_slot(self):
+        have = '{"label": "nas", "slot": 1, "host": "192.168.0.80", "token": "pulse@pve!x=y"}'
+        r = self.run_install("--add-host", host_line(), "--label", "gpu", env_extra={"TAGGED": "1", "HOSTS": have})
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("Connecting gpu (192.168.1.70, node Pve-GPU, slot 2)", r.stdout)
+
+    def test_re_adding_keeps_the_slot(self):
+        have = '{"label": "gpu", "slot": 3, "host": "192.168.1.70", "token": "pulse@pve!x=y"}'
+        r = self.run_install("--add-host", host_line(), "--label", "gpu", env_extra={"TAGGED": "1", "HOSTS": have})
+        self.assertIn("slot 3)", r.stdout)
+
+    def test_add_host_refuses_own_cluster_and_duplicates(self):
+        r = self.run_install("--add-host", host_line(host="192.168.0.50"), env_extra={"TAGGED": "1"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("node of this cluster", r.stderr)
+        have = '{"label": "big", "slot": 1, "host": "192.168.1.70", "token": "pulse@pve!x=y"}'
+        r = self.run_install("--add-host", host_line(), "--label", "gpu", env_extra={"TAGGED": "1", "HOSTS": have})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("already connected as 'big'", r.stderr)
+
+    def test_add_host_rejects_damaged_line_and_bad_label(self):
+        r = self.run_install("--add-host", "pulse-host:bm90IGpzb24", env_extra={"TAGGED": "1"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("damaged", r.stderr)
+        r = self.run_install("--add-host", host_line(), "--label", "Bad Label!", env_extra={"TAGGED": "1"})
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_add_host_by_ip_dry_run(self):
+        r = self.run_install("--add-host", "192.168.1.70", env_extra={"TAGGED": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("+ ssh root@192.168.1.70", r.stdout)
+        self.assertIn("pulse-ct110", r.stdout)
+
+    def test_list_and_remove(self):
+        have = '{"label": "gpu", "slot": 1, "host": "192.168.1.70", "tls_name": "pve-gpu", "token": "pulse@pve!pulse-ct110=y"}'
+        r = self.run_install("--list-hosts", env_extra={"TAGGED": "1", "HOSTS": have})
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("gpu", r.stdout)
+        self.assertIn("192.168.1.70", r.stdout)
+        r = self.run_install("--remove-host", "gpu", env_extra={"TAGGED": "1", "HOSTS": have})
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("rm\\ -f\\ /etc/homelab-pulse/hosts/gpu.json", r.stdout)
+        self.assertIn("pveum user token remove pulse@pve pulse-ct110", r.stdout)
+        r = self.run_install("--remove-host", "nope", env_extra={"TAGGED": "1", "HOSTS": have})
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_host_ops_need_a_pulse_container(self):
+        r = self.run_install("--list-hosts")                             # nothing tagged on this host
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no Homelab Pulse container", r.stderr)
+
+    def test_install_lets_pulse_ping(self):
+        r = self.run_install(env_extra={"TAGGED": "1"})
+        self.assertIn("net.ipv4.ping_group_range", r.stdout)

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.0 — 2026-10-16
+
+- **Separate Proxmox hosts:** watch a second server that isn't in your cluster. `install.sh --add-host <IP>`
+  creates a read-only token there over SSH once. Without SSH, run `--extra-host` on that host and pass the
+  `pulse-host:` line it prints. The host appears as one more node: map hub, panel, checks, backups, early
+  warnings and history. Guests are keyed per host, so the same VMIDs on both are fine. The dashboard shows
+  each guest's real VMID, and `overrides.json` names them `<host>/<vmid>`. A taken node name becomes
+  `name@host`. If the host is unreachable, its node shows offline and dependent alerts are held. A host
+  never reached since Pulse started raises "Pulse can't reach Proxmox host …". Each host's own CA is used
+  for its Proxmox UI check. Self-healing stays on the gate's host. Also `--list-hosts` and `--remove-host`.
+- **Fix: false "Gateway is not answering" alert.** In unprivileged containers the service user may not be
+  allowed to ping, so every ping failed. The installer now allows unprivileged ICMP for Pulse's group, and the
+  gateway check falls back to a TCP probe (a refused connection proves the host is up) wherever ping is denied.
+- **Fix: `http_contains` in overrides.json** was documented in 1.3.0 but rejected by the validator, which then
+  ignored the whole file.
+- Self-healing no longer asks the gate about Pulse's own guest (or anything else it refused) on every
+  discovery pass. A refusal is remembered for an hour, which keeps the gate log quiet.
+- Discovery scans port 2283, so Immich is recognised on its default port.
+- Demo mode adds a separate host (`mini`) whose VMIDs repeat the cluster's.
+
 ## 1.3.0 — 2026-10-14
 
 - **Expanded alerting.** New alert kinds: Internet unreachable, gateway not answering, and lab DNS

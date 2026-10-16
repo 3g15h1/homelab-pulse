@@ -6,7 +6,7 @@ The blob matched by the rules is lower-case text gathered by the fingerprinter, 
 """
 import re
 
-SCAN_PORTS = (21, 22, 53, 80, 81, 443, 1883, 3000, 3001, 5000, 5001, 5432, 6379, 7681, 8000, 8006, 8007,
+SCAN_PORTS = (21, 22, 53, 80, 81, 443, 1883, 2283, 3000, 3001, 5000, 5001, 5432, 6379, 7681, 8000, 8006, 8007,
               8080, 8081, 8088, 8096, 8123, 8443, 8888, 9000, 9090, 9443, 11434, 32400)
 TLS_FIRST = {443, 5001, 8006, 8007, 8443, 9443}
 # Never send these an HTTP request: Redis logs it as an attack, MQTT brokers as a protocol error.

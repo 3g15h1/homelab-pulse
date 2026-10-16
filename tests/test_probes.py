@@ -2,6 +2,7 @@
 import calendar
 import socket
 import ssl
+import subprocess
 import threading
 import time
 import unittest
@@ -105,11 +106,28 @@ class PingProbeTests(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertTrue(r.detail)
 
-    def test_ping_missing_binary_fails_cleanly(self):
+    def test_ping_missing_binary_falls_back_to_tcp(self):
         with unittest.mock.patch("probes.subprocess.run", side_effect=FileNotFoundError("ping")):
             r = probes.probe_ping("127.0.0.1")
+        self.assertTrue(r.ok, r.detail)                    # localhost refuses: that proves it's there
+        self.assertIn("ping not permitted", r.detail)
+
+    def test_ping_not_permitted_falls_back_to_tcp(self):
+        # what an unprivileged container's `ping` says when the service user may not open ICMP sockets
+        denied = subprocess.CompletedProcess([], 2, b"", b"ping: socktype: SOCK_RAW\nping: socket: Operation not "
+                                             b"permitted\nping: => missing cap_net_raw+p capability or setuid?\n")
+        with unittest.mock.patch("probes.subprocess.run", return_value=denied):
+            self.assertTrue(probes.probe_ping("127.0.0.1").ok)
+            r = probes.probe_ping("192.0.2.1", timeout=0.5)   # TEST-NET-1: silence on every port
         self.assertFalse(r.ok)
-        self.assertIn("ping", r.detail)
+        self.assertIn("TCP", r.detail)
+
+    def test_ping_plain_no_reply_does_not_fall_back(self):
+        lost = subprocess.CompletedProcess([], 1, b"1 packets transmitted, 0 received", b"")
+        with unittest.mock.patch("probes.subprocess.run", return_value=lost), \
+                unittest.mock.patch("probes.probe_alive_tcp") as tcp:
+            self.assertEqual(probes.probe_ping("127.0.0.1").detail, "no reply")
+        tcp.assert_not_called()
 
     def test_run_dispatches_ping(self):
         r = probes.run({"kind": "ping", "host": "127.0.0.1"})

@@ -1,4 +1,4 @@
-"""Demo mode: a simulated two-node cluster and the network its guests answer on.
+"""Demo mode: a simulated two-node cluster, a standalone second host, and the network their guests answer on.
 
 DemoPve returns the same JSON shapes as the real API, and DemoNet stands in for the network, so
 discovery, checks and the UI run through exactly the code paths a live install uses.
@@ -36,6 +36,14 @@ GUESTS = {
     203: ("pve2", "lxc", "sandbox", 2, 2048, 8, 0.0, 0.0, "192.168.1.23", False, None),
 }
 
+# A standalone second host (not in the cluster), as `install.sh --add-host` would add it. Its VMIDs
+# deliberately repeat the cluster's: Pulse keys them apart.
+MINI_NODES = {"mini": {"ip": "192.168.1.4", "cpus": 6, "mem": 64, "model": "Intel(R) Xeon(R) W-2133 CPU @ 3.60GHz"}}
+MINI_GUESTS = {
+    100: ("mini", "lxc", "frigate", 4, 4096, 32, 0.12, 0.45, "192.168.1.30", True, None),
+    101: ("mini", "lxc", "immich", 2, 4096, 64, 0.03, 0.50, "192.168.1.31", True, None),
+}
+
 
 def _f(port, kind, product, icon, rank=0, scheme=None, **kw):
     return Finding(port=port, kind=kind, product=product, icon=icon, rank=rank,
@@ -55,6 +63,8 @@ SERVICES = {   # what DemoNet answers on, per IP
     "192.168.1.20": [_f(11434, "http", "Ollama", "brain", 25)],
     "192.168.1.21": [SSH, _f(3000, "http", "Grafana", "chart", 11)],
     "192.168.1.22": [SSH, _f(443, "tls", "TrueNAS", "disk", 28, cert_days=200)],
+    "192.168.1.30": [SSH, _f(5000, "http", "Frigate", "camera", 21)],
+    "192.168.1.31": [SSH, _f(2283, "http", "Immich", "photo", 9)],
     ROUTER: [_f(80, "http", "Router", "router", 300)],
 }
 
@@ -90,12 +100,13 @@ class DemoPve:
     """Smooth random-walk CPU, growing network counters, an AI job on the ollama guest now and then,
     and last night's 02:00 backup on each node. Deterministic per seed."""
 
-    def __init__(self, seed=7, clock=time.time):
+    def __init__(self, seed=7, clock=time.time, nodes=None, guests=None, cluster="demo"):
+        self.nodes, self.guests, self.cluster = nodes or NODES, guests or GUESTS, cluster
         self.rng = random.Random(seed)
         self.clock = clock
         self.t0 = clock()
-        self.counters = {v: [self.rng.randint(2, 40) * GIB, self.rng.randint(1, 20) * GIB] for v in GUESTS}
-        self.cpu = {v: g[6] for v, g in GUESTS.items()}
+        self.counters = {v: [self.rng.randint(2, 40) * GIB, self.rng.randint(1, 20) * GIB] for v in self.guests}
+        self.cpu = {v: g[6] for v, g in self.guests.items()}
         self.last = clock()
         self.ai_until = 0.0
 
@@ -105,7 +116,7 @@ class DemoPve:
         self.last = now
         if now > self.ai_until and self.rng.random() < 0.02 * max(dt, 1) / 5:
             self.ai_until = now + self.rng.uniform(25, 90)
-        for vmid, g in GUESTS.items():
+        for vmid, g in self.guests.items():
             base, running = g[6], g[9]
             self.cpu.setdefault(vmid, base)                  # guests can appear while running
             self.counters.setdefault(vmid, [0, 0])
@@ -122,12 +133,12 @@ class DemoPve:
             self.counters[vmid][1] += int(rate_out * wobble * dt * self.rng.uniform(0.5, 1.5))
 
     def _node_cpu(self, node):
-        return sum(self.cpu[v] * GUESTS[v][3] for v in GUESTS if GUESTS[v][0] == node) / NODES[node]["cpus"]
+        return sum(self.cpu[v] * self.guests[v][3] for v in self.guests if self.guests[v][0] == node) / self.nodes[node]["cpus"]
 
     def resources(self):
         self._tick()
         out = []
-        for vmid, (node, kind, name, cores, maxmem, maxdisk, _c, memf, _ip, running, _a) in GUESTS.items():
+        for vmid, (node, kind, name, cores, maxmem, maxdisk, _c, memf, _ip, running, _a) in self.guests.items():
             out.append({
                 "id": f"{kind}/{vmid}", "type": kind, "vmid": vmid, "name": name, "node": node,
                 "status": "running" if running else "stopped", "cpu": self.cpu[vmid], "maxcpu": cores,
@@ -137,7 +148,7 @@ class DemoPve:
                 "uptime": int(self.clock() - self.t0 + 86400 * 3 + vmid * 611) if running else 0, "template": 0,
                 "tags": "media" if vmid == 104 else "",
             })
-        for node in NODES:
+        for node in self.nodes:
             lvm_used = STORAGE_TREND["used_now"] if node == "pve2" else 90e9
             for sid, total, used, kind in (("local", 100e9, 14e9, "dir"), ("local-lvm", 360e9, lvm_used, "lvmthin")):
                 out.append({"id": f"storage/{node}/{sid}", "type": "storage", "storage": sid, "node": node,
@@ -146,18 +157,20 @@ class DemoPve:
             out.append({"id": f"storage/{node}/nas-backup", "type": "storage", "storage": "nas-backup", "node": node,
                         "status": "available", "disk": int(820e9), "maxdisk": int(3.8e12), "plugintype": "nfs",
                         "shared": 1})
-            n = NODES[node]
+            n = self.nodes[node]
             out.append({"id": f"node/{node}", "type": "node", "node": node, "status": "online",
                         "cpu": self._node_cpu(node), "maxcpu": n["cpus"], "mem": n["mem"] * GIB * 0.4,
                         "maxmem": n["mem"] * GIB, "uptime": int(self.clock() - self.t0 + 86400 * 5)})
         return out
 
     def cluster_status(self):
-        return [{"type": "cluster", "name": "demo", "nodes": 2, "quorate": 1}] + [
-            {"type": "node", "name": n, "ip": v["ip"], "online": 1, "local": int(n == "pve1")} for n, v in NODES.items()]
+        first = next(iter(self.nodes))
+        head = [{"type": "cluster", "name": self.cluster, "nodes": len(self.nodes), "quorate": 1}] if self.cluster else []
+        return head + [{"type": "node", "name": n, "ip": v["ip"], "online": 1, "local": int(n == first)}
+                       for n, v in self.nodes.items()]
 
     def node_status(self, node):
-        n, cpu = NODES[node], self._node_cpu(node)
+        n, cpu = self.nodes[node], self._node_cpu(node)
         return {"cpu": cpu, "loadavg": [f"{cpu * n['cpus'] * 0.9:.2f}", "0.41", "0.33"],
                 "memory": {"total": n["mem"] * GIB, "used": int(n["mem"] * GIB * (0.4 + 0.01 * math.sin(self.clock() / 120)))},
                 "rootfs": {"total": 100e9, "used": 14e9}, "uptime": int(self.clock() - self.t0 + 86400 * 5),
@@ -166,10 +179,10 @@ class DemoPve:
                 "kversion": "Linux 7.0.14-19-pve #1 SMP PREEMPT_DYNAMIC PMX 7.0.14-19 (2026-09-18T07:31Z)"}
 
     def node_network(self, node):
-        return [{"iface": "vmbr0", "type": "bridge", "address": NODES[node]["ip"], "gateway": ROUTER, "active": 1}]
+        return [{"iface": "vmbr0", "type": "bridge", "address": self.nodes[node]["ip"], "gateway": ROUTER, "active": 1}]
 
     def guest_config(self, node, kind, vmid):
-        g = GUESTS[int(vmid)]
+        g = self.guests[int(vmid)]
         if kind == "qemu":
             cfg = {"net0": "virtio=BC:24:11:00:00:01,bridge=vmbr0", "cores": g[3], "ostype": "l26"}
             if g[10] is False:
@@ -178,11 +191,11 @@ class DemoPve:
         return {"net0": f"name=eth0,bridge=vmbr0,gw={ROUTER},ip={g[8]}/24,type=veth", "cores": g[3], "ostype": "debian"}
 
     def lxc_interfaces(self, node, vmid):
-        g = GUESTS[int(vmid)]
+        g = self.guests[int(vmid)]
         return [{"name": "lo", "inet": "127.0.0.1/8"}, {"name": "eth0", "inet": f"{g[8]}/24"}]
 
     def agent_interfaces(self, node, vmid):
-        g = GUESTS[int(vmid)]
+        g = self.guests[int(vmid)]
         if not g[10]:
             raise SourceError(f"PVE /nodes/{node}/qemu/{vmid}/agent/network-get-interfaces: HTTP 500 "
                               "QEMU guest agent is not running")
@@ -217,7 +230,7 @@ class DemoPve:
 
     def task_log(self, node, upid):
         t, lines = self._last_2am(), []
-        for vmid, g in GUESTS.items():
+        for vmid, g in self.guests.items():
             if g[0] != node or vmid == 106:
                 continue  # 106 (pulse) was created after last night's run
             t += 40 + vmid % 7 * 30
@@ -240,7 +253,7 @@ class DemoPve:
         return [int(now - span + i * step) for i in range(1, n + 1)]
 
     def rrd(self, node, kind, vmid, timeframe):
-        g = GUESTS[int(vmid)]
+        g = self.guests[int(vmid)]
         out = []
         for t in self._times(timeframe):
             wave = 0.5 + 0.5 * math.sin(t / 5400 + int(vmid))
@@ -251,7 +264,7 @@ class DemoPve:
         return out
 
     def node_rrd(self, node, timeframe):
-        n = NODES[node]
+        n = self.nodes[node]
         return [{"time": t, "cpu": 0.05 + 0.04 * math.sin(t / 7200), "maxcpu": n["cpus"],
                  "memused": n["mem"] * GIB * (0.4 + 0.03 * math.sin(t / 9000)), "memtotal": n["mem"] * GIB,
                  "netin": 2e5 * (1.2 + math.sin(t / 3600)), "netout": 1.5e5 * (1.2 + math.sin(t / 4000))}
@@ -270,6 +283,8 @@ class DemoPve:
         return out
 
     def tasks(self):
+        if self.guests is not GUESTS:
+            return []
         start = self._last_2am()
         return [
             {"upid": "UPID:pve1:demo:2", "type": "vzstart", "id": "106", "user": "root@pam", "node": "pve1",

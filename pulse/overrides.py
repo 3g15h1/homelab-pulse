@@ -4,6 +4,7 @@ Precedence (highest first): guest tags, overrides.json, inference.
 """
 import ipaddress
 import json
+import re
 from pathlib import Path
 
 
@@ -33,7 +34,8 @@ def parse_tags(tags):
     return out
 
 
-_TOP = {"internet": (dict, bool), "router": dict, "scan": dict, "guests": dict, "checks": list, "hide_checks": list}
+_TOP = {"internet": (dict, bool), "router": dict, "scan": dict, "guests": dict, "checks": list, "hide_checks": list,
+        "http_contains": dict}
 _KINDS = {"tcp": ("host", "port"), "http": ("url",), "tls": ("host", "port"), "dns": ("server", "qname")}
 
 
@@ -53,6 +55,8 @@ def _validate(data):
         missing = [f for f in ("id", "name", *_KINDS[c["kind"]]) if f not in c]
         if missing:
             raise OverrideError(f"checks[{i}]: missing {', '.join(missing)}")
+    if not all(isinstance(v, str) and v for v in data.get("http_contains", {}).values()):
+        raise OverrideError("http_contains values must be non-empty strings")
     for k in ("ports_add", "ports_remove"):
         if not all(isinstance(p, int) and 0 < p < 65536 for p in data.get("scan", {}).get(k, [])):
             raise OverrideError(f"scan.{k} must be a list of port numbers")
@@ -72,3 +76,31 @@ def load(path):
         raise OverrideError(f"{Path(path).name}: invalid JSON at line {e.lineno}") from None
     _validate(data)
     return data
+
+
+_REF = re.compile(r"([a-z0-9][a-z0-9-]*)/(\d+)((?::\d+)?)")
+
+
+def resolve_refs(data, slots, span):
+    """Guests on an extra Proxmox host are written "<label>/<vmid>" (e.g. "gpu/105", or
+    "gpu/105:80" for a check id), since their VMIDs may repeat the primary's. Translate those to
+    Pulse's internal keys. `slots`: {label: slot}. An unknown label is an error, like a typo."""
+    def one(ref):
+        m = _REF.fullmatch(ref) if isinstance(ref, str) else None
+        if not m:
+            return ref
+        if m.group(1) not in slots:
+            raise OverrideError(f"{ref!r}: no Proxmox host called {m.group(1)!r} (known: {', '.join(slots) or 'none'})")
+        return f"{slots[m.group(1)] * span + int(m.group(2))}{m.group(3)}"
+    if not data:
+        return data
+    out = dict(data)
+    if "guests" in out:
+        out["guests"] = {one(k): v for k, v in out["guests"].items()}
+    if "hide_checks" in out:
+        out["hide_checks"] = [one(k) for k in out["hide_checks"]]
+    if "http_contains" in out:
+        out["http_contains"] = {one(k): v for k, v in out["http_contains"].items()}
+    if "checks" in out:
+        out["checks"] = [dict(c, target=one(c["target"])) if "target" in c else c for c in out["checks"]]
+    return out
