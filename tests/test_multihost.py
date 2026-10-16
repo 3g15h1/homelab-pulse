@@ -100,7 +100,8 @@ class MergeTests(unittest.TestCase):
         m, _ = multi(extra)
         res = m.resources()
         self.assertFalse(any(r.get("host") for r in res))
-        self.assertEqual(m.host_status(), [{"label": "mini", "ok": False, "error": "connect timed out", "nodes": []}])
+        self.assertEqual(m.host_status(), [{"label": "mini", "ok": False, "error": "connect timed out", "nodes": [],
+                                            "source": "installer", "host": None}])
         snap = {"sources": {"pve": {"ok": True, "hosts": m.host_status()}}}
         conds = collect.build_conditions(snap, {}, [], NOW)
         self.assertEqual([(c["key"], c["kind"]) for c in conds], [("source:pve:mini", "api_down")])

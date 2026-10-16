@@ -368,6 +368,10 @@ run pct push "$VMID" "$WORK/app.tgz" /tmp/homelab-pulse.tgz
 in_ct "rm -rf $APP.new && mkdir -p $APP.new && tar -xzf /tmp/homelab-pulse.tgz -C $APP.new && rm /tmp/homelab-pulse.tgz && rm -rf $APP && mv $APP.new $APP && chown -R root:root $APP && chmod -R a+rX $APP"
 run pct push "$VMID" "$SRC/homelab-pulse.service" /etc/systemd/system/homelab-pulse.service
 run pct push "$VMID" "$SRC/homelab-pulse-passwd" /usr/local/bin/homelab-pulse-passwd --perms 755
+# the settings page's "Upgrade" button: a root-only unit that runs update.sh for the requested release
+run pct push "$VMID" "$SRC/homelab-pulse-update" /usr/local/sbin/homelab-pulse-update --perms 755
+run pct push "$VMID" "$SRC/homelab-pulse-update.service" /etc/systemd/system/homelab-pulse-update.service --perms 644
+run pct push "$VMID" "$SRC/homelab-pulse-update.path" /etc/systemd/system/homelab-pulse-update.path --perms 644
 run pct push "$VMID" "$SRC/overrides.example.json" "$ETC/overrides.example.json" --perms 644
 
 if [ "$UPGRADE" = 0 ] || ! pct exec "$VMID" -- test -s "$ETC/env"; then
@@ -427,7 +431,7 @@ elif [ -x "$GATE" ]; then
   HEAL_NOTE="Self-healing gate updated."
 fi
 
-in_ct "systemctl daemon-reload && systemctl enable -q homelab-pulse && systemctl restart homelab-pulse"
+in_ct "systemctl daemon-reload && systemctl enable -q homelab-pulse && systemctl enable -q --now homelab-pulse-update.path && systemctl restart homelab-pulse"
 
 if [ "$DRY" = 1 ]; then
   if [ "$SHOW_PW" = 1 ] && [ "$NEW_PW" = 0 ] && [ -n "$ADMIN_PW" ]; then say "Admin password: $ADMIN_PW"; fi

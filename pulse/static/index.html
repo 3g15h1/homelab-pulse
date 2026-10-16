@@ -193,6 +193,7 @@
     </div>
     <div class="hdr-right">
       <span class="num" id="clock"></span>
+      <a class="live" id="updPill" href="settings#updatesCard" hidden style="color:var(--accent);text-decoration:none"></a>
       <span class="live" id="live"><i></i><span>connecting</span></span>
       <a class="gear" href="settings" title="Alerts &amp; settings" aria-label="Alerts and settings">⚙</a>
       <button class="gear" id="signOut" hidden title="Sign out" aria-label="Sign out" style="background:none;border:0;font:inherit;cursor:pointer">⎋</button>
@@ -679,6 +680,8 @@ function renderEvents() {
 function renderChrome() {
   const src = S.sources, demo = src.pve.mode === "demo";
   $("nodeName").textContent = S.nodes.length === 1 ? `${S.nodes[0].name} · homelab` : S.nodes.length ? `${S.nodes.length} nodes · homelab` : "homelab";
+  const upd = S.app && S.app.update;                   // a newer release exists (settings → Updates)
+  $("updPill").hidden = !upd || VIEW_TOKEN !== null; $("updPill").textContent = upd ? `↑ ${upd} available` : "";
   $("banner").classList.toggle("show", demo);
   $("bannerText").innerHTML = demo ? "<b>Demo mode:</b> a simulated two-node cluster plus a separate second host (PULSE_PVE=demo). Set PULSE_PVE=live to watch your own lab." : "";
   $("mapTag").style.display = src.pve.mode === "demo" ? "" : "none"; $("mapTag").className = "tag demo"; $("mapTag").textContent = "demo data";

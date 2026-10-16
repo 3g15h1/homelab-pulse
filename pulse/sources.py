@@ -7,7 +7,9 @@ for all of them.
 import http.client
 import json
 import re
+import secrets
 import socket
+import ssl
 import urllib.parse
 from pathlib import Path
 
@@ -132,15 +134,16 @@ class ExtraHost:
     """A Proxmox host (or cluster) that isn't part of the primary one, e.g. a standalone second
     server. `slot` (1, 2, …) is fixed when it's added, so its guests keep their keys."""
 
-    def __init__(self, label, slot, client):
+    def __init__(self, label, slot, client, source="installer"):
         self.label, self.slot, self.client = label, int(slot), client
+        self.source = source     # "installer" (/etc, read-only to Pulse) or "ui" (added on the settings page)
         self.names = {}          # its real node name -> the name Pulse shows (name@label if taken)
         self.last = None         # last good /cluster/resources (raw), kept while it's unreachable
         self.last_status = None  # last good /cluster/status
         self.ok, self.error, self.updated = None, None, None
 
 
-def load_hosts(directory, timeout=8):
+def load_hosts(directory, timeout=8, source="installer"):
     """Extra hosts from <dir>/*.json, written by `install.sh --add-host`:
     {"label", "slot", "host", "port", "token", "ca_file"?, "tls_name"?}. -> (hosts, [(file stem, error)])."""
     hosts, errors = [], []
@@ -161,7 +164,7 @@ def load_hosts(directory, timeout=8):
             errors.append((f.stem, str(e)[:120]))
             continue
         seen.add(slot)
-        hosts.append(ExtraHost(label, slot, client))
+        hosts.append(ExtraHost(label, slot, client, source))
     return sorted(hosts, key=lambda h: h.slot), errors
 
 
@@ -183,6 +186,16 @@ class MultiPve:
         self.extras = sorted(extras, key=lambda h: h.slot)
         self.config_errors = list(errors)
         self.route = {}          # node name shown -> (client, real name, slot)
+        self.slots = {h.label: h.slot for h in self.extras}
+
+    # -- hosts added or removed at runtime (settings page); readers see either the old or the new list --
+
+    def add(self, host):
+        self.extras = sorted(self.extras + [host], key=lambda h: h.slot)
+        self.slots = {h.label: h.slot for h in self.extras}
+
+    def remove(self, label):
+        self.extras = [h for h in self.extras if h.label != label]
         self.slots = {h.label: h.slot for h in self.extras}
 
     # -- mapping --
@@ -294,7 +307,8 @@ class MultiPve:
 
     def host_status(self):
         """Extra hosts for the dashboard: [{label, ok, error, nodes}]."""
-        return ([{"label": h.label, "ok": h.ok, "error": h.error, "nodes": sorted(h.names.values())}
+        return ([{"label": h.label, "ok": h.ok, "error": h.error, "nodes": sorted(h.names.values()),
+                  "source": h.source, "host": getattr(h.client, "host", None)}
                  for h in self.extras] + [{"label": name, "ok": False, "error": f"bad host file: {err}", "nodes": []}
                                           for name, err in self.config_errors])
 
@@ -363,3 +377,87 @@ class MultiPve:
     def rrd(self, node, kind, vmid, timeframe):
         c, n, v = self._guest(node, vmid)
         return c.rrd(n, kind, v, timeframe)
+
+
+# ---------------------------------------------------------------- adding a host from the settings page
+
+class HostSetupError(Exception):
+    pass
+
+
+def decode_host_line(line):
+    """The "pulse-host:…" line `install.sh --extra-host` prints -> {host, port, node, token, ca}."""
+    import base64
+    try:
+        d = json.loads(base64.urlsafe_b64decode(line.strip().removeprefix("pulse-host:") + "=="))
+        if not all(isinstance(d.get(k), str) and d[k] for k in ("host", "token", "ca")):
+            raise ValueError
+        return d
+    except (ValueError, TypeError, UnicodeDecodeError):
+        raise HostSetupError("that line is damaged; copy the whole pulse-host:… line again") from None
+
+
+def add_host(multi, directory, d, label=None, used_slots=(), client_factory=None):
+    """Test the connection, then save the host under `directory` and start watching it.
+    `d`: {host, port?, token, ca}. Returns the new ExtraHost. Raises HostSetupError with a readable reason."""
+    host, port, token, ca = str(d["host"]).strip(), int(d.get("port") or 8006), str(d["token"]).strip(), str(d["ca"])
+    if not re.fullmatch(r"[A-Za-z0-9.:\[\]-]{1,253}", host):
+        raise HostSetupError("the address doesn't look like an IP or host name")
+    if not re.fullmatch(r"[^\s!=]+@[^\s!=]+![A-Za-z][A-Za-z0-9._-]*=[0-9a-fA-F-]{20,64}", token):
+        raise HostSetupError("the token should look like user@realm!tokenid=xxxxxxxx-xxxx-…")
+    if "BEGIN CERTIFICATE" not in ca:
+        raise HostSetupError("the CA certificate should be the text of /etc/pve/pve-root-ca.pem on that host")
+    if any(getattr(h.client, "host", None) == host for h in multi.extras):
+        raise HostSetupError(f"{host} is already connected")
+    directory = Path(directory)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp_ca = directory / f".test-{secrets.token_hex(4)}-ca.pem"
+    tmp_ca.write_text(ca)
+    try:
+        client = (client_factory or PveClient)(host, port, token, str(tmp_ca), None)
+        try:
+            status = client.cluster_status()
+        except SourceError as e:
+            msg = str(e)
+            raise HostSetupError("the token was refused (check it, and that it has the PVEAuditor role)" if "401" in msg
+                                 else f"Proxmox answered with an error: {msg}") from None
+        except ssl.SSLError as e:
+            why = getattr(e, "verify_message", None) or getattr(e, "reason", None) or e
+            raise HostSetupError(f"the CA certificate doesn't match that host ({why})") from None
+        except OSError as e:
+            raise HostSetupError(f"can't reach {host}:{port} ({e.strerror or e})") from None
+        node = next((e for e in status if e.get("type") == "node" and e.get("local")), None)
+        if not node:
+            raise HostSetupError("that host didn't say which node it is")
+        mine = {e.get("ip") for e in multi.primary.cluster_status() if e.get("type") == "node"}
+        if host in mine or node.get("ip") in mine:
+            raise HostSetupError(f"{host} is a node of the cluster Pulse already watches")
+        label = (label or re.sub(r"[^a-z0-9-]+", "-", node["name"].lower())).strip("-")[:31]
+        if not _LABEL.fullmatch(label):
+            raise HostSetupError("the name must be lowercase letters, digits and dashes")
+        if label in multi.slots:
+            raise HostSetupError(f"there is already a host called {label}; pick another name")
+        slot = max([h.slot for h in multi.extras] + list(used_slots) + [0]) + 1
+        (directory / f"{label}-ca.pem").write_text(ca)
+        f = directory / f"{label}.json"
+        f.write_text(json.dumps({"label": label, "slot": slot, "host": host, "port": port, "token": token,
+                                 "tls_name": node["name"]}, indent=1))
+        f.chmod(0o600)
+        h = ExtraHost(label, slot, (client_factory or PveClient)(host, port, token, str(directory / f"{label}-ca.pem"),
+                                                                    node["name"]), "ui")
+        multi.add(h)
+        return h
+    finally:
+        tmp_ca.unlink(missing_ok=True)
+
+
+def remove_host(multi, directory, label):
+    h = next((h for h in multi.extras if h.label == label), None)
+    if not h:
+        raise HostSetupError(f"no host called {label}")
+    if h.source != "ui":
+        raise HostSetupError(f"{label} was added by the installer; remove it with: install.sh --remove-host {label}")
+    for name in (f"{label}.json", f"{label}-ca.pem"):
+        (Path(directory) / name).unlink(missing_ok=True)
+    multi.remove(label)
+    return h

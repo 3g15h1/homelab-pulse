@@ -20,6 +20,8 @@ import recipes as recipes_mod
 import settings as settings_mod
 import sources
 import store as store_mod
+import updates as updates_mod
+from version import VERSION
 
 log = logging.getLogger("pulse")
 
@@ -1023,4 +1025,10 @@ class Collector:
                 "attention": list(self.attention),
                 "heal": {"mode": self.sources["heal"]["mode"],
                          "asks": sorted(self.heal.asks) if self.heal else []},
+                "app": self._app_info(),
             }
+
+    def _app_info(self):
+        up = getattr(self, "updates", None)
+        last = up.last if up and up.repo else {}
+        return {"version": VERSION, "update": last.get("tag") if updates_mod.newer(last.get("tag")) else None}

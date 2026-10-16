@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.0 — 2026-10-16
+
+- **Add separate Proxmox hosts on the settings page** (Settings → Proxmox hosts). Paste the `pulse-host:` line
+  from `install.sh --extra-host`, or enter the address, token and CA by hand. Pulse tests the connection first,
+  and says plainly what's wrong: token refused, CA doesn't match, or host unreachable. The host appears
+  without a restart. Hosts added this way can be removed there too. Installer-added hosts still work as before.
+- **Getting started card** on the settings page: where alerts go, other Proxmox servers, and who can see the
+  dashboard. Hide it once done.
+- **Update notice and one-click upgrade:** Pulse checks GitHub for a newer release twice a day (can be turned
+  off) and shows "↑ vX.Y.Z available" on the dashboard. **Settings → Updates → Upgrade** installs exactly that
+  release through a small root-only unit in the container, checks that Pulse comes back, and rolls back if it
+  doesn't. Upgrading from 1.6 or older needs the installer once to set this up.
+- Pulse now knows and logs its own version.
+
 ## 1.6.0 — 2026-10-16
 
 - **Optional sign-in for the dashboard** (Settings → Access; open by default, as before). The admin password

@@ -161,6 +161,13 @@
   </section>
 
   <main id="app" hidden>
+    <section class="card" id="setupCard" hidden>
+      <h2>Getting started</h2>
+      <p class="sub">Three things to decide once. Pulse found your Proxmox and its guests by itself.</p>
+      <div id="setupSteps"></div>
+      <div style="text-align:right;margin-top:6px"><button class="ghost" id="setupDismiss">Hide this</button></div>
+    </section>
+
     <section class="card">
       <h2>Right now</h2>
       <p class="sub">The current state of alerting, in one glance.</p>
@@ -168,7 +175,7 @@
       <div id="attnList"></div>
     </section>
 
-    <section class="card">
+    <section class="card" id="notifCard">
       <h2>Notifications</h2>
       <p class="sub">How Pulse reaches you when something needs attention.</p>
       <div class="state-line" id="notifState"><span class="muted">Loading…</span></div>
@@ -300,7 +307,36 @@
       <div class="list" id="healTargets"><span class="muted">Loading…</span></div>
     </section>
 
-    <section class="card">
+    <section class="card" id="hostsCard">
+      <h2>Proxmox hosts</h2>
+      <p class="sub">Pulse sees every node of its cluster by itself. Add separate servers that aren't in that cluster here.</p>
+      <div class="list" id="hostList"><span class="muted">Loading…</span></div>
+      <h3 class="sub">Add a host</h3>
+      <div class="note">On the other Proxmox host, as root, run:<br>
+        <code>bash -c "$(curl -fsSL https://raw.githubusercontent.com/3g15h1/homelab-pulse/main/install.sh)" install.sh --extra-host</code><br>
+        It creates a read-only token there and prints a <code>pulse-host:</code> line. Paste that line here.</div>
+      <form id="hostForm">
+        <label class="f"><span>pulse-host: line</span><textarea id="host_line" spellcheck="false" rows="2" placeholder="pulse-host:eyJob3N0Ijog…"></textarea></label>
+        <details id="hostManual" style="margin:6px 0 4px">
+          <summary class="muted small" style="cursor:pointer">No installer on that host? Enter the details by hand</summary>
+          <div class="note" style="margin-top:8px">On that host:
+            <code>pveum user add pulse@pve; pveum acl modify / --users pulse@pve --roles PVEAuditor; pveum user token add pulse@pve pulse --privsep 0</code>
+            gives the token (<code>pulse@pve!pulse=</code> + the value it prints), and <code>cat /etc/pve/pve-root-ca.pem</code> the CA.</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <label class="f" style="flex:2;min-width:180px"><span>Address</span><input type="text" id="host_addr" placeholder="192.168.1.70"></label>
+            <label class="f" style="flex:1;min-width:90px"><span>Port</span><input type="number" id="host_port" placeholder="8006"></label>
+          </div>
+          <label class="f"><span>API token</span><input type="password" id="host_token" autocomplete="off" placeholder="pulse@pve!pulse=xxxxxxxx-xxxx-…"></label>
+          <label class="f"><span>CA certificate</span><textarea id="host_ca" spellcheck="false" rows="3" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label>
+        </details>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+          <label class="f" style="flex:1;min-width:180px"><span>Name in Pulse (optional; default: its node name)</span><input type="text" id="host_label" maxlength="31" placeholder="gpu"></label>
+          <button type="submit" class="primary" id="hostAdd" style="flex:0 0 auto">Test &amp; add</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card" id="accessCard">
       <h2>Access</h2>
       <p class="sub">Who can see the dashboard. Changing settings always needs the admin password.</p>
       <div class="state-line" id="accessState"><span class="muted">Loading…</span></div>
@@ -342,6 +378,19 @@
       </div>
       <label class="f"><span>Users who may also change settings (comma-separated; others can only view)</span><input type="text" id="px_admins" placeholder="alice, bob"></label>
       <div class="note">Make sure Pulse itself is only reachable through the proxy, or anyone at a listed address could send the header.</div>
+    </section>
+
+    <section class="card" id="updatesCard">
+      <h2>Updates</h2>
+      <p class="sub">Which version runs here, and whether a newer one is out.</p>
+      <div class="state-line" id="updState"><span class="muted">Loading…</span></div>
+      <div id="updBody"></div>
+      <div class="rowline">
+        <div class="grow"><div class="t">Check for new versions</div>
+          <div class="d">Twice a day, Pulse asks GitHub for the latest release. Nothing about your lab is sent.</div></div>
+        <button class="ghost" id="updCheck">Check now</button>
+        <div class="toggle" role="switch" id="updToggle" tabindex="0" aria-checked="false" aria-label="Check for new versions"></div>
+      </div>
     </section>
 
     <section class="card">
@@ -480,7 +529,7 @@ function fill(c) {
       });
     }
   }
-  renderNotifState(); renderSpeakState();
+  renderNotifState(); renderSpeakState(); renderSetup(); renderUpdates();
 }
 
 function collect() {
@@ -685,6 +734,7 @@ function targetLabel(t) {
 }
 async function loadState() {
   try { STATE = await (await fetch("./api/state")).json(); } catch { return; }
+  renderHosts();
   const a = STATE.attention || [];
   $("attnList").innerHTML = a.length ? a.map((x) => `<div class="banner-attn"><span class="dot ${esc(x.severity)}"></span>
     <b>${x.muted ? "🔕 " : ""}${esc(x.title)}</b><br>
@@ -945,6 +995,121 @@ $("linkForm").onsubmit = async (e) => {
   $("linkNew").hidden = false; $("link_name").value = ""; $("link_url").select(); loadAccess();
 };
 
+/* ---------- Proxmox hosts ---------- */
+let HOSTS = [];
+async function loadHosts() {
+  const r = await api("GET", "/api/hosts"); if (!r.ok) return;
+  HOSTS = r.data.hosts; $("hostsCard").hidden = !r.data.can_add; renderHosts(); renderSetup();
+}
+function renderHosts() {
+  const primary = STATE ? STATE.nodes.filter((n) => !n.host).map((n) => n.name) : [];
+  const rows = [`<div class="rowline"><span class="dot ok"></span><div class="grow"><div class="t">This cluster</div>
+    <div class="d">${primary.length ? esc(primary.join(", ")) : "…"} · found by itself</div></div></div>`];
+  for (const h of HOSTS) {
+    const st = h.ok === false ? `<span style="color:var(--bad)">${esc(h.error || "unreachable")}</span>` : h.ok ? "connected" : "connecting…";
+    rows.push(`<div class="rowline"><span class="dot ${h.ok ? "ok" : h.ok === false ? "critical" : "off"}"></span>
+      <div class="grow"><div class="t">${esc(h.label)} <span class="muted" style="font-weight:400">${esc(h.host || "")}</span></div>
+      <div class="d">${st}${h.nodes && h.nodes.length ? " · " + esc(h.nodes.join(", ")) : ""}${h.source === "installer" ? " · added by the installer" : ""}</div></div>
+      ${h.source === "ui" ? `<button class="ghost" data-hremove="${esc(h.label)}">Remove</button>` : ""}</div>`);
+  }
+  $("hostList").innerHTML = rows.join("");
+  $("hostList").querySelectorAll("[data-hremove]").forEach((b) => b.onclick = async () => {
+    if (!confirm(`Stop watching ${b.dataset.hremove}? Its token stays on that host until you delete it there.`)) return;
+    const r = await api("DELETE", `/api/hosts/${b.dataset.hremove}`);
+    toast(r.ok ? "Removed ✓" : (r.data.error || "Not removed"), !r.ok); loadHosts();
+  });
+}
+$("hostForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const line = $("host_line").value.trim();
+  const body = line ? { line } : { host: $("host_addr").value.trim(), port: Number($("host_port").value) || 8006,
+    token: $("host_token").value.trim(), ca: $("host_ca").value };
+  body.label = $("host_label").value.trim();
+  const b = $("hostAdd"); b.disabled = true; b.textContent = "Testing…";
+  const r = await api("POST", "/api/hosts", body);
+  b.disabled = false; b.textContent = "Test & add";
+  if (!r.ok) { toast(r.data.error || "Not added", true); return; }
+  toast(`${r.data.label} added ✓ It appears on the dashboard within a minute.`);
+  for (const id of ["host_line", "host_addr", "host_port", "host_token", "host_ca", "host_label"]) $(id).value = "";
+  setTimeout(loadHosts, 6000); loadHosts();
+};
+
+/* ---------- getting started ---------- */
+function renderSetup() {
+  if (!CFG) return;
+  if (CFG.ui.setup_dismissed) { $("setupCard").hidden = true; return; }
+  const alerts = enabledChannels().length > 0, hosts = HOSTS.length > 0, locked = CFG.access.dashboard === "login";
+  const step = (done, title, detail, target) => `<div class="rowline"><span class="dot ${done ? "ok" : "off"}"></span>
+    <div class="grow"><div class="t">${title}</div><div class="d">${detail}</div></div>
+    <button class="ghost" data-goto="${target}">${done ? "Change" : "Set up"}</button></div>`;
+  $("setupSteps").innerHTML =
+    step(alerts, "Choose where alerts go", alerts ? `Alerts go to ${esc(enabledChannels().map((c) => CHANNEL_LABEL[c]).join(", "))}.`
+      : "Nothing is sent yet: pick ntfy, Discord, Telegram, email or another channel.", "notifCard") +
+    step(hosts, "Add your other Proxmox servers <span class='muted' style='font-weight:400'>(optional)</span>",
+      hosts ? `${HOSTS.length} separate host${HOSTS.length === 1 ? "" : "s"} connected.` : "Only needed for servers outside this cluster.", "hostsCard") +
+    step(locked, "Decide who can see the dashboard", locked ? "The dashboard needs a sign-in."
+      : "Open to anyone who can reach Pulse. Fine on a home LAN; lock it if others share your network.", "accessCard");
+  $("setupSteps").querySelectorAll("[data-goto]").forEach((b) => b.onclick = () => $(b.dataset.goto).scrollIntoView({ behavior: "smooth", block: "start" }));
+  $("setupCard").hidden = false;
+}
+$("setupDismiss").onclick = () => { CFG.ui.setup_dismissed = true; $("setupCard").hidden = true; autoSave(); };
+
+/* ---------- updates ---------- */
+let UPD = null, updPoll = null;
+async function loadUpdates() {
+  const r = await api("GET", "/api/update"); if (!r.ok) return;
+  UPD = r.data; renderUpdates();
+}
+function renderUpdates() {
+  if (!UPD) return;
+  const st = UPD.status, running = st && st.state === "running" && Date.now() / 1000 - st.ts < 900;
+  $("updState").innerHTML = !UPD.enabled ? `Version <b>${esc(UPD.current)}</b>. Update checks aren't available here.`
+    : UPD.available ? `Version <b>${esc(UPD.current)}</b> · <b style="color:var(--accent)">${esc(UPD.latest)} is available</b>`
+    : `Version <b>${esc(UPD.current)}</b> · ${UPD.checked ? `up to date (checked ${ago(UPD.checked)})` : "not checked yet"}`;
+  let body = "";
+  if (UPD.error) body += `<div class="note" style="color:var(--warn)">The last check failed: ${esc(UPD.error)}</div>`;
+  if (UPD.available) {
+    body += `<div class="note"><b>${esc(UPD.name || UPD.latest)}</b> — ${esc(UPD.notes || "")}
+      ${UPD.url ? ` <a href="${esc(UPD.url)}" target="_blank" rel="noopener" style="color:var(--accent)">Release notes</a>` : ""}</div>`;
+    body += UPD.can_upgrade
+      ? `<div style="display:flex;gap:10px;align-items:center;margin:8px 0"><button class="primary" id="updGo" style="flex:0 0 auto;white-space:nowrap"${running ? " disabled" : ""}>${running ? "Upgrading…" : `Upgrade to ${esc(UPD.latest)}`}</button>
+         <span class="muted small">Takes about a minute. Settings and history are kept, and it goes back by itself if the new version doesn't start.</span></div>`
+      : `<div class="note">Upgrade by running the installer again on the Proxmox host (one-click upgrades arrive with it).</div>`;
+  }
+  if (st && !running && st.state !== "ok" && st.tag) body += `<div class="note" style="color:var(--bad)">${esc(st.message)}</div>`;
+  if (st && st.state === "ok" && st.tag === "v" + UPD.current && Date.now() / 1000 - st.ts < 86400) body += `<div class="note">✓ ${esc(st.message)} ${ago(st.ts)}.</div>`;
+  $("updBody").innerHTML = body;
+  if ($("updGo")) $("updGo").onclick = startUpgrade;
+  setToggle("updToggle", CFG ? CFG.updates.check : true);
+}
+async function startUpgrade() {
+  const tag = UPD.latest;
+  if (!confirm(`Upgrade Pulse to ${tag} now? The dashboard is away for about a minute.`)) return;
+  const r = await api("POST", "/api/update", { tag });
+  if (!r.ok) { toast(r.data.error || "Couldn't start the upgrade", true); return; }
+  toast(`Upgrading to ${tag}…`);
+  UPD.status = { state: "running", ts: Date.now() / 1000, tag }; renderUpdates();
+  const from = UPD.current, t0 = Date.now();
+  clearInterval(updPoll);
+  updPoll = setInterval(async () => {             // Pulse restarts in between: failed requests are expected
+    let s = null;
+    try { const rr = await fetch("./api/update", { headers: { "X-Pulse-Request": "1" } }); if (rr.ok) s = await rr.json(); } catch { /* restarting */ }
+    if (s && (s.current !== from || (s.status && s.status.state !== "running"))) {
+      clearInterval(updPoll); UPD = s; renderUpdates();
+      if (s.current !== from) { toast(`Now running ${s.current} ✓`); setTimeout(() => location.reload(), 1500); }
+      else toast(s.status.message || "The upgrade didn't finish", true);
+    } else if (Date.now() - t0 > 600000) { clearInterval(updPoll); toast("No answer after 10 minutes; check the Pulse container", true); }
+  }, 4000);
+}
+bindToggle("updToggle", () => { CFG.updates.check = isOn("updToggle"); autoSave(); });
+$("updCheck").onclick = async () => {
+  $("updCheck").disabled = true;
+  const r = await api("POST", "/api/update/check");
+  $("updCheck").disabled = false;
+  if (r.ok) { UPD = r.data; renderUpdates(); toast(UPD.error ? "Check failed" : UPD.available ? `${UPD.latest} is available` : "Up to date ✓", Boolean(UPD.error)); }
+  else toast(r.data.error || "Check failed", true);
+};
+
 /* ---------- password ---------- */
 $("pwForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -961,8 +1126,9 @@ async function start() {
   if (!s.signed_in) { showLogin(); return; }
   const r = await api("GET", "/api/settings"); if (!r.ok) return;
   $("login").hidden = true; $("app").hidden = false; $("signout").hidden = false;
-  fill(r.data.settings); loadState(); loadMutes(); loadDeliveries(); loadHeal(); loadAccess();
+  fill(r.data.settings); loadState(); loadMutes(); loadDeliveries(); loadHeal(); loadAccess(); loadHosts(); loadUpdates();
   renderMuteAdd();
+  if (location.hash && $(location.hash.slice(1))) setTimeout(() => $(location.hash.slice(1)).scrollIntoView({ block: "start" }), 300);
 }
 start();
 setInterval(() => { if (!$("app").hidden) { loadState(); loadDeliveries(); loadHeal(); } }, 30000);

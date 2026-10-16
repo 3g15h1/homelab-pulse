@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Root side of the settings page's "Upgrade" button. Run by homelab-pulse-update.service when Pulse
+# writes a release tag to /var/lib/homelab-pulse/update-request (homelab-pulse-update.path).
+# It upgrades to exactly that tag with update.sh, checks that Pulse answers again, and rolls back to
+# /opt/homelab-pulse.prev if it doesn't. The outcome goes to update-status.json for the settings page.
+set -uo pipefail
+STATE=${PULSE_STATE:-/var/lib/homelab-pulse}      # (the overrides are for the tests)
+REQ=$STATE/update-request
+STATUS=$STATE/update-status.json
+APP=${PULSE_APP:-/opt/homelab-pulse}
+ENVFILE=${PULSE_ENV:-/etc/homelab-pulse/env}
+TRIES=${PULSE_UPDATE_TRIES:-30}
+LOG=$(mktemp)
+trap 'rm -f "$LOG"' EXIT
+
+status() {  # status <state> <tag> <message>
+  python3 - "$1" "$2" "$3" "$LOG" "$STATUS" <<'PY'
+import json, sys, time
+state, tag, msg, log, out = sys.argv[1:6]
+tail = open(log, errors="replace").read()[-1500:] if state != "running" else ""
+json.dump({"state": state, "tag": tag, "message": msg, "ts": time.time(), "log": tail}, open(out + ".tmp", "w"))
+PY
+  mv "$STATUS.tmp" "$STATUS" && chown pulse:pulse "$STATUS" 2>/dev/null; chmod 640 "$STATUS"
+}
+
+[ -f "$REQ" ] || exit 0
+TAG=$(head -c 40 "$REQ" | tr -d '[:space:]')
+rm -f "$REQ"
+if ! [[ "$TAG" =~ ^v[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]]; then
+  status failed "" "refused: not a release tag"; exit 1
+fi
+status running "$TAG" "upgrading"
+PORT=$(sh -c ". '$ENVFILE' 2>/dev/null; echo \${PULSE_PORT:-80}")
+answers() {   # Pulse's web server is up (healthz 200, or 503 while e.g. Proxmox is briefly away)
+  for _ in $(seq 1 "$TRIES"); do
+    python3 -c "
+import urllib.request, urllib.error
+try: urllib.request.urlopen('http://127.0.0.1:$PORT/healthz', timeout=2)
+except urllib.error.HTTPError: pass
+except Exception: raise SystemExit(1)" 2>/dev/null && return 0
+    sleep 2
+  done
+  return 1
+}
+installed() { sed -n 's/^VERSION = "\(.*\)"/\1/p' "$APP/pulse/version.py" 2>/dev/null; }
+BEFORE=$(installed)
+bash "$APP/update.sh" "$TAG" >"$LOG" 2>&1
+if [ "$(installed)" = "$BEFORE" ] && [ "v$BEFORE" != "$TAG" ]; then
+  systemctl is-active -q homelab-pulse || systemctl restart homelab-pulse
+  status failed "$TAG" "the upgrade to $TAG failed before anything changed (see the log)"
+  exit 1
+fi
+if answers; then
+  status ok "$TAG" "upgraded to $TAG"
+  exit 0
+fi
+if [ -f "$APP.prev/pulse/server.py" ]; then
+  rm -rf "$APP.failed"; mv "$APP" "$APP.failed"; mv "$APP.prev" "$APP"
+  systemctl restart homelab-pulse
+  status failed "$TAG" "$TAG didn't come up, so Pulse went back to $BEFORE (the failed copy is in $APP.failed)"
+else
+  status failed "$TAG" "$TAG didn't come up and there is no previous copy to go back to"
+fi
+exit 1

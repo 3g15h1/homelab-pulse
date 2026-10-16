@@ -35,8 +35,11 @@ The installer:
 Options: `--vmid`, `--storage`, `--bridge`, `--ip 192.168.1.60/24 --gw 192.168.1.1`, `--ref <tag>`,
 `--dry-run` (prints every change and makes none). `install.sh --help` lists them all.
 
-**Upgrade:** run the same command again. It finds the container by its tag, keeps the token, the CA
-and your settings, and keeps the previous version in `/opt/homelab-pulse.prev`.
+**Upgrade:** when a new release is out, the dashboard shows "↑ v1.x.y available". On **Settings → Updates**,
+press **Upgrade**. It takes about a minute, keeps your settings and history, and goes back to the previous
+version by itself if the new one doesn't start. Running the install command again does the same, and also
+refreshes the self-healing gate on the host if you use it. It finds the container by its tag, keeps the
+token, the CA and your settings, and keeps the previous version in `/opt/homelab-pulse.prev`.
 
 Add it to a phone's home screen (Share → Add to Home Screen) and it opens like an app. `?embed` hides
 the header and footer, for embedding in another dashboard such as a Home Assistant webpage card.
@@ -82,7 +85,8 @@ A **cluster** needs nothing extra: Pulse sees every node through any one of them
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/3g15h1/homelab-pulse/main/install.sh)" install.sh --add-host 192.168.1.70
 ```
 
-This logs in to `root@192.168.1.70` over SSH once (it may ask for that host's root password). On that host it
+Or paste the same details on **Settings → Proxmox hosts**: Pulse tests the connection before saving, and the
+host appears without a restart. From the installer, this logs in to `root@192.168.1.70` over SSH once (it may ask for that host's root password). On that host it
 creates the same read-only `pulse@pve` user (role **PVEAuditor**) and a token for this Pulse. It then copies
 the token and that host's CA into the Pulse container. There's no SSH between the two hosts? Run the
 installer with `--extra-host` on the other host instead. It prints a `pulse-host:…` line; pass that line
@@ -313,8 +317,9 @@ Python 3.11+ standard library only. There's nothing to `pip install`.
 - **The dashboard is open unless you turn on a sign-in** (see "Who can see the dashboard"). Open, anyone who can
   reach it sees guest names, addresses, services and backup state. Even with a sign-in, prefer your LAN, a VPN
   such as Tailscale, or a login proxy over exposing Pulse to the internet directly.
-- Nothing leaves your network except the Internet check (a TCP connect to 1.1.1.1:443, which you can turn off)
-  and the alerts you configure.
+- Nothing leaves your network except the Internet check (a TCP connect to 1.1.1.1:443, which you can turn off),
+  the alerts you configure, and the update check: twice a day it asks GitHub's API for the latest Pulse
+  release, sending nothing about your lab. Turn it off on Settings → Updates.
 - Text taken from scanned services (page titles, headers) is shortened and always shown escaped.
 
 **Proxmox VE 8:** reading a VM's addresses through the guest agent needs `VM.Monitor`, which the

@@ -1,0 +1,8 @@
+[Unit]
+Description=Homelab Pulse: upgrade to the requested release (and roll back if it fails)
+Documentation=https://github.com/3g15h1/homelab-pulse
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homelab-pulse-update
+TimeoutStartSec=600

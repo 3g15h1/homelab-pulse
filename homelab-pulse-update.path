@@ -1,0 +1,9 @@
+[Unit]
+Description=Homelab Pulse: watch for an upgrade request from the settings page
+
+[Path]
+PathExists=/var/lib/homelab-pulse/update-request
+Unit=homelab-pulse-update.service
+
+[Install]
+WantedBy=multi-user.target

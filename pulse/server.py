@@ -16,6 +16,8 @@ import os
 import re
 import socket
 import sys
+import tempfile
+import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,6 +35,8 @@ import probes
 import settings as settings_mod
 import sources
 import store as store_mod
+import updates
+from version import VERSION
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -75,11 +79,13 @@ def build_collector(env=os.environ):
         net = demo.DemoNet()
         st.put("config", {"heal": {"mode": "auto", "recipes": {}}})      # the demo shows healing in action
         mini = demo.DemoPve(seed=11, nodes=demo.MINI_NODES, guests=demo.MINI_GUESTS, cluster=None)
-        pve = sources.MultiPve(demo.DemoPve(), [sources.ExtraHost("mini", 1, mini)])
+        pve = sources.MultiPve(demo.DemoPve(), [sources.ExtraHost("mini", 1, mini, "ui")])
         c = collect.Collector(pve, "demo", net, probe_fn=net.probe, overrides_path=ov, ca_path=ca,
                               store=st, notifier=notify.Notifier(st, public_url),
                               heal=heal_mod.HealEngine(demo.DemoGate(net), st))
         c.demo, c.admin_ready = True, True
+        c.hosts_dir = tempfile.mkdtemp(prefix="pulse-demo-hosts-")
+        c.updates = updates.Updates(st, None, None)          # the demo never asks GitHub
         return c
     host = env.get("PULSE_PVE_HOST")
     if not host:
@@ -87,10 +93,19 @@ def build_collector(env=os.environ):
     token = _read_secret(env.get("PULSE_PVE_TOKEN_FILE", "/etc/homelab-pulse/pve-token"))
     if not token:
         sys.exit("PULSE_PVE=live but the token file is missing or empty")
-    db = env.get("PULSE_DB") or str(Path(env.get("STATE_DIRECTORY", "/var/lib/homelab-pulse").split(":")[0]) / "pulse.db")
+    state_dir = Path(env.get("STATE_DIRECTORY", "/var/lib/homelab-pulse").split(":")[0])
+    db = env.get("PULSE_DB") or str(state_dir / "pulse.db")
     st = store_mod.Store(db)
     primary = sources.PveClient(host, int(env.get("PULSE_PVE_PORT", 8006)), token, ca, env.get("PULSE_PVE_TLS_NAME") or None)
     extras, errors = sources.load_hosts(env.get("PULSE_PVE_HOSTS_DIR", "/etc/homelab-pulse/hosts"))
+    hosts_dir = env.get("PULSE_UI_HOSTS_DIR") or str(state_dir / "hosts")      # added on the settings page
+    ui_extras, ui_errors = sources.load_hosts(hosts_dir, source="ui")
+    for h in ui_extras:
+        if h.slot in {x.slot for x in extras} or h.label in {x.label for x in extras}:
+            ui_errors.append((h.label, f"slot {h.slot} or its name is taken by a host the installer added"))
+        else:
+            extras.append(h)
+    errors += ui_errors
     for name, err in errors:
         log.error("extra Proxmox host %s: %s", name, err)
     pve = sources.MultiPve(primary, extras, errors)
@@ -101,7 +116,8 @@ def build_collector(env=os.environ):
         healer = heal_mod.HealEngine(gate, st)
     c = collect.Collector(pve, "live", discover.Net(), probe_fn=probes.run, overrides_path=ov, ca_path=ca,
                           store=st, notifier=notify.Notifier(st, public_url), heal=healer)
-    c.demo = False
+    c.demo, c.hosts_dir = False, hosts_dir
+    c.updates = updates.Updates(st, env.get("PULSE_UPDATE_REPO", "3g15h1/homelab-pulse"), state_dir)
     c.admin_ready = auth.ensure_admin(st, env.get("PULSE_ADMIN_PASSWORD_FILE", "/etc/homelab-pulse/admin-password"))
     return c
 
@@ -248,6 +264,33 @@ def make_handler(collector):
                 self._guard(need_session=False)
                 return self._send(200, {"ok": True}, cookie=self._cookie("", 0))
             self._guard()
+            if path == "/api/hosts":
+                multi, hosts_dir = self._hosts()
+                b = self._body()
+                try:
+                    d = sources.decode_host_line(str(b["line"])) if b.get("line") else \
+                        {k: b.get(k) for k in ("host", "port", "token", "ca")}
+                    if not d.get("host") or not d.get("token") or not d.get("ca"):
+                        raise sources.HostSetupError("paste the pulse-host: line, or fill in address, token and CA")
+                    h = sources.add_host(multi, hosts_dir, d, (b.get("label") or "").strip() or None,
+                                         st.get("used_slots") or [])
+                except sources.HostSetupError as e:
+                    raise _HttpError(400, str(e)) from None
+                st.put("used_slots", sorted(set((st.get("used_slots") or []) + [h.slot])))   # never reuse a slot
+                log.info("extra Proxmox host %s (%s) added from the settings page", h.label, h.client.host)
+                return self._send(200, {"ok": True, "label": h.label})
+            if path == "/api/update/check":
+                if not getattr(collector, "updates", None):
+                    raise _HttpError(409, "update checks aren't available")
+                collector.updates.check(force=True)
+                return self._send(200, collector.updates.view())
+            if path == "/api/update":
+                try:
+                    res = collector.updates.request(str(self._body().get("tag", "")))
+                except (ValueError, OSError) as e:
+                    raise _HttpError(400, str(e)) from None
+                log.info("upgrade to %s requested from the settings page", res["requested"])
+                return self._send(200, res)
             if path == "/api/access/links":
                 name = str(self._body().get("name", "")).strip()[:60] or "View link"
                 try:
@@ -357,6 +400,15 @@ def make_handler(collector):
 
         def _delete(self):
             path = urllib.parse.unquote(self.path.split("?", 1)[0])
+            m = re.fullmatch(r"/api/hosts/([a-z0-9][a-z0-9-]{0,30})", path)
+            if m:
+                self._guard()
+                multi, hosts_dir = self._hosts()
+                try:
+                    sources.remove_host(multi, hosts_dir, m.group(1))
+                except sources.HostSetupError as e:
+                    raise _HttpError(400, str(e)) from None
+                return self._send(200, {"ok": True})
             m = re.fullmatch(r"/api/access/links/([0-9a-f]{8})", path)
             if m:
                 self._guard()
@@ -377,6 +429,12 @@ def make_handler(collector):
                 return self._send(200, {"deliveries": st.deliveries()})
             if path == "/api/access":
                 return self._send(200, {"viewer_set": bool(st.get("viewer")), "links": auth.list_view_links(st)})
+            if path == "/api/update":
+                up = getattr(collector, "updates", None)
+                return self._send(200, up.view() if up else {"current": VERSION, "enabled": False})
+            if path == "/api/hosts":
+                multi = collector.pve if isinstance(collector.pve, sources.MultiPve) else None
+                return self._send(200, {"hosts": multi.host_status() if multi else [], "can_add": multi is not None})
             return self._send(200, {"mutes": st.list_mutes(collector.clock())})
 
         def do_GET(self):
@@ -384,7 +442,7 @@ def make_handler(collector):
 
         def _get(self):
             path, _, query = self.path.partition("?")
-            if path in ("/api/settings", "/api/deliveries", "/api/mutes", "/api/access"):
+            if path in ("/api/settings", "/api/deliveries", "/api/mutes", "/api/access", "/api/hosts", "/api/update"):
                 return self._get_admin(path)
             if path == "/api/heal":
                 self._need_session()
@@ -427,6 +485,11 @@ def make_handler(collector):
             if f.parent == STATIC and f.is_file() and f.suffix in CONTENT_TYPES:
                 return self._send(200, f.read_bytes(), CONTENT_TYPES[f.suffix], "no-cache")
             return self._send(404, {"error": "not found"})
+
+        def _hosts(self):
+            if not isinstance(collector.pve, sources.MultiPve) or not getattr(collector, "hosts_dir", None):
+                raise _HttpError(409, "this Pulse can't add hosts")
+            return collector.pve, collector.hosts_dir
 
         def _redirect(self, location):
             self.send_response(302)
@@ -481,9 +544,12 @@ def main():
         log.warning("no admin password: settings are locked until homelab-pulse-passwd is run")
     collector.notifier.start()
     collector.start()
+    if collector.updates.repo:
+        threading.Thread(target=collector.updates.run, daemon=True, name="updates",
+                         args=(lambda: settings_mod.load(collector.store)["updates"]["check"], collector._stop)).start()
     port = int(os.environ.get("PULSE_PORT", 80))
     server = serve(collector, os.environ.get("PULSE_BIND", "0.0.0.0"), port)
-    log.info("homelab-pulse on :%d (proxmox=%s)", port, collector.sources["pve"]["mode"])
+    log.info("homelab-pulse %s on :%d (proxmox=%s)", VERSION, port, collector.sources["pve"]["mode"])
     server.serve_forever()
 
 

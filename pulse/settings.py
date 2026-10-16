@@ -47,6 +47,8 @@ DEFAULTS = {
     # who may view the dashboard: "open" (anyone on the network) or "login"; see auth.py
     "access": {"dashboard": "open",
                "proxy": {"enabled": False, "header": "Remote-User", "from": "", "admins": ""}},
+    "ui": {"setup_dismissed": False},
+    "updates": {"check": True},          # ask GitHub twice a day whether a newer release exists
 }
 
 
@@ -116,6 +118,8 @@ SCHEMA = {
     "access": {"dashboard": ("str", r"open|login"),
                "proxy": {"enabled": BOOL, "header": ("str", r"[A-Za-z0-9-]{1,64}"), "from": ("networks",),
                          "admins": ("str", r"[^\r\n]{0,512}")}},
+    "ui": {"setup_dismissed": BOOL},
+    "updates": {"check": BOOL},
 }
 
 
