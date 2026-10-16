@@ -111,6 +111,16 @@ Pick where alerts go, press **Save & send test**, and you're done.
   phone through the companion app.
 - **ntfy:** push to an [ntfy](https://ntfy.sh) topic (ntfy.sh or your own server, optional access token).
   Critical alerts arrive with high priority, and tapping one opens the dashboard.
+- **Discord:** a channel webhook URL (channel settings → Integrations → Webhooks). Messages are colour-coded.
+- **Telegram:** a bot token from @BotFather and your chat ID (a user, group or `@channel`).
+- **Gotify:** your server and an application token. Critical alerts get priority 8.
+- **Pushover:** your user key and an application's API token. Critical alerts get high priority.
+- **Email:** any SMTP server (STARTTLS, SSL/TLS or a plain local relay) and up to 10 recipients.
+
+Turn on as many channels as you like; each one has a **Send test** button. Tokens and passwords are never
+shown back in full. While the internet is down, the cloud channels (ntfy.sh, Discord, Telegram, Pushover)
+are skipped. A webhook, or an ntfy, Gotify or mail server on your LAN, still gets the alert. A fix waiting
+for approval has a **Run fix** button in Home Assistant and ntfy; the other channels link to the settings page.
 
 What raises an alert (each can be switched off):
 
@@ -194,7 +204,7 @@ It only warns about a steady trend, not a one-off copy.
 
 Viewing the dashboard stays open as before. Changing anything on `/settings` needs the admin password.
 - **Storage:** the password is stored hashed (PBKDF2), and a sign-in lasts 30 days.
-- **Secrets:** the ntfy token and webhook headers are never shown back in full.
+- **Secrets:** tokens, passwords, the Discord webhook URL and webhook headers are never shown back in full.
 - **Attempts:** sign-ins are limited to 5 a minute.
 - **Forgotten password:** in the Pulse container, run `homelab-pulse-passwd` (or `homelab-pulse-passwd --generate`).
 - **Upgrading from 1.0:** the installer creates a password and prints it.

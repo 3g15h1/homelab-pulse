@@ -288,7 +288,7 @@ class NetDownFlagTests(unittest.TestCase):
         notes = eng.process(conds, 1000.0, self._cfg(), [], "lab")
         self.assertTrue(notes)
         self.assertTrue(all(n.net_down for n in notes))
-        self.assertIn("ntfy skipped", notes[0].message)
+        self.assertIn("cloud notification channels skipped", notes[0].message)
 
     def test_no_net_down_no_flag(self):
         eng = alerts.AlertEngine({}, started=0.0)
@@ -297,7 +297,7 @@ class NetDownFlagTests(unittest.TestCase):
         notes = eng.process(conds, 1000.0, self._cfg(), [], "lab")
         self.assertTrue(notes)
         self.assertFalse(notes[0].net_down)
-        self.assertNotIn("ntfy skipped", notes[0].message)
+        self.assertNotIn("channels skipped", notes[0].message)
 
     def test_net_down_pending_does_not_flag(self):
         eng = alerts.AlertEngine({}, started=0.0)

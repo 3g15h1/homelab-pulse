@@ -13,6 +13,7 @@ import alerts as alerts_mod
 import catalog
 import discover
 import early
+import notify as notify_mod
 import overrides as overrides_mod
 import probes as probes_mod
 import recipes as recipes_mod
@@ -694,7 +695,7 @@ class Collector:
         if self.last_compact is None or now - self.last_compact >= 3600:
             self.store.compact(now)
             self.last_compact = now
-        channels = [k for k in ("webhook", "ntfy") if cfg["notify"][k]["enabled"]]
+        channels = [k for k in notify_mod.CHANNELS if cfg["notify"].get(k, {}).get("enabled")]
         last = getattr(self.notifier, "last", None)
         attention = []
         for c in conds:

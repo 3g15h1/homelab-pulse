@@ -174,10 +174,10 @@
       <div class="state-line" id="notifState"><span class="muted">Loading…</span></div>
       <div class="rowline">
         <span class="dot off" id="whDot"></span>
-        <div class="grow"><div class="t">Home Assistant webhook</div><div class="d" id="whSub">Loading…</div></div>
+        <div class="grow"><div class="t">Webhook <span class="muted" style="font-weight:400">(Home Assistant or anything that takes JSON)</span></div><div class="d" id="whSub">Loading…</div></div>
         <button class="ghost" id="whTest">Send test</button>
         <button class="ghost" id="whEditBtn">Edit</button>
-        <div class="toggle" role="switch" id="whToggle" tabindex="0" aria-checked="false" aria-label="Home Assistant webhook enabled"></div>
+        <div class="toggle" role="switch" id="whToggle" tabindex="0" aria-checked="false" aria-label="Webhook enabled"></div>
       </div>
       <div class="editbox" id="whEdit" hidden>
         <label class="f"><span>Webhook URL</span><input type="url" id="wh_url" placeholder="http://homeassistant.local:8123/api/webhook/pulse-alerts"></label>
@@ -204,6 +204,7 @@
           <input type="checkbox" id="nt_insecure" style="width:16px;height:16px;accent-color:#a5b4fc"> Accept a self-signed certificate</label>
         <div class="note">Push to an <a href="https://ntfy.sh" style="color:var(--accent)">ntfy</a> topic; the ntfy app shows it on your phone.</div>
       </div>
+      <div id="moreChannels"></div>
       <h3 class="sub">Recent notifications</h3>
       <div class="list" id="notifLog"><span class="muted">Loading…</span></div>
     </section>
@@ -403,6 +404,7 @@ function fill(c) {
   setToggle("whToggle", w.enabled);
   $("nt_server").value = n.server; $("nt_topic").value = n.topic; $("nt_token").value = n.token;
   $("nt_insecure").checked = n.insecure; setToggle("ntToggle", n.enabled);
+  fillMore(c);
   $("kinds").innerHTML = KINDS.map(([k, label]) =>
     `<div class="rowline"><div class="grow"><div class="t">${esc(label)}</div></div>
      <div class="toggle" role="switch" id="k_${k}" tabindex="0" aria-checked="${a.kinds[k] ? "true" : "false"}" aria-label="${esc(label)}"></div></div>`).join("");
@@ -444,6 +446,7 @@ function collect() {
   }
   n.enabled = isOn("ntToggle"); n.server = $("nt_server").value.trim() || "https://ntfy.sh";
   n.topic = $("nt_topic").value.trim(); n.token = $("nt_token").value.trim(); n.insecure = $("nt_insecure").checked;
+  collectMore(c);
   for (const [k] of KINDS) a.kinds[k] = isOn(`k_${k}`);
   a.down_after_s = num("downMinVal") * 60; a.group_window_s = num("groupSecs"); a.repeat_every_s = num("remindHVal") * 3600;
   a.send_recovery = isOn("recToggle");
@@ -471,6 +474,8 @@ function fieldIdFor(path) {
   const direct = { "notify.webhook.url": "wh_url", "notify.ntfy.topic": "nt_topic", "notify.ntfy.server": "nt_server",
     "notify.ntfy.token": "nt_token", "alerts.quiet.start": "q_start", "alerts.quiet.end": "q_end" };
   if (direct[path]) return direct[path];
+  const m = /^notify\.(\w+)\.(\w+)$/.exec(path);
+  if (m && MORE[m[1]]) return `${m[1]}_${m[2]}`;
   if (path.startsWith("warnings.")) { const [, rule, f] = path.split("."); return `w_${rule}_${f}`; }
   return null;
 }
@@ -516,24 +521,93 @@ async function testChannel(ch, btn) {
 $("whTest").onclick = (e) => testChannel("webhook", e.target);
 $("ntTest").onclick = (e) => testChannel("ntfy", e.target);
 
+/* ---------- more notification channels (rendered from this list) ---------- */
+// [field, label, type, placeholder | options]; type: text, password, url, number, select, checkbox
+const MORE = {
+  discord: { label: "Discord", fields: [["url", "Webhook URL", "password", "https://discord.com/api/webhooks/…"]],
+    note: "In Discord: channel settings → Integrations → Webhooks → New Webhook → Copy Webhook URL." },
+  telegram: { label: "Telegram", fields: [["token", "Bot token", "password", "123456789:AA…"], ["chat_id", "Chat ID", "text", "123456789, -100… for a group, or @channel"]],
+    note: "Create a bot with @BotFather and send it any message. @userinfobot tells you your chat ID. Fixes waiting for approval link to this page." },
+  gotify: { label: "Gotify", fields: [["server", "Server", "url", "https://gotify.example.org"], ["token", "App token", "password", "A…"],
+    ["insecure", "Accept a self-signed certificate", "checkbox"]],
+    note: "In Gotify: Apps → Create application, then copy its token. A Gotify server on your LAN still works while the internet is down." },
+  pushover: { label: "Pushover", fields: [["user", "User key", "password", "u…"], ["token", "API token", "password", "a…"]],
+    note: "Your user key is on the Pushover dashboard. Create an application there for the API token. Critical alerts are sent with high priority." },
+  email: { label: "Email", fields: [["host", "SMTP server", "text", "smtp.example.org"], ["port", "Port", "number", "587"],
+    ["security", "Security", "select", [["starttls", "STARTTLS"], ["ssl", "SSL/TLS"], ["none", "None (local relay)"]]],
+    ["username", "Username (optional)", "text", ""], ["password", "Password", "password", ""],
+    ["from", "From", "text", "pulse@example.org"], ["to", "To (up to 10, comma-separated)", "text", "you@example.org"]],
+    note: "Any SMTP server works. For Gmail or iCloud, use an app password." },
+};
+const CHANNEL_LABEL = { webhook: "webhook", ntfy: "ntfy", ...Object.fromEntries(Object.entries(MORE).map(([k, v]) => [k, v.label])) };
+const CHANNEL_DOM = { webhook: "wh", ntfy: "nt", ...Object.fromEntries(Object.keys(MORE).map((k) => [k, k])) };
+function renderMoreChannels() {
+  const field = (ch, [f, label, type, extra]) => {
+    const id = `${ch}_${f}`;
+    if (type === "checkbox") return `<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:6px 0">
+      <input type="checkbox" id="${id}" style="width:16px;height:16px;accent-color:#a5b4fc"> ${esc(label)}</label>`;
+    if (type === "select") return `<label class="f" style="flex:1;min-width:180px"><span>${esc(label)}</span><select id="${id}">${
+      extra.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join("")}</select></label>`;
+    return `<label class="f" style="flex:1;min-width:180px"><span>${esc(label)}</span><input type="${type}" id="${id}"${
+      type === "password" ? ' autocomplete="off"' : ""} placeholder="${esc(extra || "")}"></label>`;
+  };
+  $("moreChannels").innerHTML = Object.entries(MORE).map(([ch, spec]) => `
+    <div class="rowline">
+      <span class="dot off" id="${ch}Dot"></span>
+      <div class="grow"><div class="t">${esc(spec.label)}</div><div class="d" id="${ch}Sub">Loading…</div></div>
+      <button class="ghost" id="${ch}Test">Send test</button>
+      <button class="ghost" id="${ch}EditBtn">Edit</button>
+      <div class="toggle" role="switch" id="${ch}Toggle" tabindex="0" aria-checked="false" aria-label="${esc(spec.label)} enabled"></div>
+    </div>
+    <div class="editbox" id="${ch}Edit" hidden>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">${spec.fields.filter((x) => x[2] !== "checkbox").map((x) => field(ch, x)).join("")}</div>
+      ${spec.fields.filter((x) => x[2] === "checkbox").map((x) => field(ch, x)).join("")}
+      <div class="note">${esc(spec.note)}</div>
+    </div>`).join("");
+  for (const [ch, spec] of Object.entries(MORE)) {
+    bindEdit(`${ch}EditBtn`, `${ch}Edit`);
+    bindToggle(`${ch}Toggle`, autoSave);
+    for (const [f] of spec.fields) $(`${ch}_${f}`).addEventListener("change", autoSave);
+    $(`${ch}Test`).onclick = (e) => testChannel(ch, e.target);
+  }
+}
+function fillMore(c) {
+  for (const [ch, spec] of Object.entries(MORE)) {
+    setToggle(`${ch}Toggle`, c.notify[ch].enabled);
+    for (const [f, , type] of spec.fields) {
+      if (type === "checkbox") $(`${ch}_${f}`).checked = c.notify[ch][f]; else $(`${ch}_${f}`).value = c.notify[ch][f];
+    }
+  }
+}
+function collectMore(c) {
+  for (const [ch, spec] of Object.entries(MORE)) {
+    c.notify[ch].enabled = isOn(`${ch}Toggle`);
+    for (const [f, , type] of spec.fields) {
+      const el = $(`${ch}_${f}`);
+      c.notify[ch][f] = type === "checkbox" ? el.checked : type === "number" ? Number(el.value) || 0 : el.value.trim();
+    }
+  }
+}
+const enabledChannels = () => Object.keys(CHANNEL_LABEL).filter((ch) => CFG.notify[ch] && CFG.notify[ch].enabled);
+renderMoreChannels();
+
 function lastDelivery(channel) {
-  const d = DELIVERIES.filter((x) => (x.channel || "").toLowerCase().includes(channel));
+  const d = DELIVERIES.filter((x) => x.channel === channel);
   return d.length ? Math.max(...d.map((x) => x.ts)) : null;
 }
 function renderNotifState() {
-  const w = CFG.notify.webhook, n = CFG.notify.ntfy;
-  const on = w.enabled || n.enabled;
+  const on = enabledChannels();
   $("pill").hidden = false;
-  $("pillText").textContent = on ? "Alerting on" : "Alerting off";
-  $("pillDot").className = "dot " + (on ? "ok" : "off");
-  $("whDot").className = "dot " + (w.enabled ? "ok" : "off");
-  $("ntDot").className = "dot " + (n.enabled ? "ok" : "off");
-  const wl = lastDelivery("webhook"), nl = lastDelivery("ntfy");
-  $("whSub").textContent = w.enabled ? (wl ? `Last delivered ${ago(wl)}` : "Enabled — nothing sent yet") : "Off — nothing is sent here";
-  $("ntSub").textContent = n.enabled ? (nl ? `Last delivered ${ago(nl)}` : "Enabled — nothing sent yet") : "Off — nothing is sent here";
-  $("ntTest").disabled = !n.enabled; $("whTest").disabled = !w.enabled;
-  $("notifState").innerHTML = on
-    ? `Alerts currently go to <b>${[w.enabled ? "Home Assistant webhook" : null, n.enabled ? "ntfy" : null].filter(Boolean).join("</b> and <b>")}</b>.`
+  $("pillText").textContent = on.length ? "Alerting on" : "Alerting off";
+  $("pillDot").className = "dot " + (on.length ? "ok" : "off");
+  for (const [ch, dom] of Object.entries(CHANNEL_DOM)) {
+    const enabled = Boolean(CFG.notify[ch] && CFG.notify[ch].enabled), last = lastDelivery(ch);
+    $(`${dom}Dot`).className = "dot " + (enabled ? "ok" : "off");
+    $(`${dom}Sub`).textContent = enabled ? (last ? `Last delivered ${ago(last)}` : "Enabled — nothing sent yet") : "Off — nothing is sent here";
+    $(`${dom}Test`).disabled = !enabled;
+  }
+  $("notifState").innerHTML = on.length
+    ? `Alerts currently go to <b>${on.map((ch) => esc(CHANNEL_LABEL[ch])).join("</b>, <b>")}</b>.`
     : `<b style="color:var(--bad)">No channel enabled — you will not hear about problems.</b>`;
 }
 function renderSpeakState() {
@@ -546,10 +620,10 @@ function renderSpeakState() {
 
 /* ---------- right now: attention ---------- */
 function renderStatusStrip() {
-  const w = CFG.notify.webhook, n = CFG.notify.ntfy;
+  const on = enabledChannels();
   const mode = HEAL ? MODE_LABEL[HEAL.mode] || HEAL.mode : "…";
   $("statusLine").innerHTML =
-    `<b>Notifications:</b> ${(w.enabled || n.enabled) ? [w.enabled ? "webhook ✓" : null, n.enabled ? "ntfy ✓" : null].filter(Boolean).join(" · ") : "<b style='color:var(--bad)'>off</b>"}` +
+    `<b>Notifications:</b> ${on.length ? on.map((ch) => esc(CHANNEL_LABEL[ch]) + " ✓").join(" · ") : "<b style='color:var(--bad)'>off</b>"}` +
     ` &nbsp;·&nbsp; <b>Healing:</b> ${esc(mode)}` +
     ` &nbsp;·&nbsp; <b>Silenced:</b> ${MUTES.length} item${MUTES.length === 1 ? "" : "s"}`;
 }

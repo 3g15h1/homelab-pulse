@@ -1,7 +1,8 @@
 """Alert, notification and warning settings: defaults, validation and masking of secrets.
 
 Stored as one JSON document in the store (key "config") and edited on the settings page. Secrets
-(the ntfy token and webhook header values) only ever leave the server masked as "••••" + last 4.
+(tokens, passwords, the Discord webhook URL, webhook header values) only ever leave the server masked
+as "••••" + last 4.
 """
 import copy
 import re
@@ -12,6 +13,12 @@ DEFAULTS = {
     "notify": {
         "webhook": {"enabled": False, "url": "", "headers": {}, "insecure": False},
         "ntfy": {"enabled": False, "server": "https://ntfy.sh", "topic": "", "token": "", "insecure": False},
+        "discord": {"enabled": False, "url": ""},
+        "telegram": {"enabled": False, "token": "", "chat_id": ""},
+        "gotify": {"enabled": False, "server": "", "token": "", "insecure": False},
+        "pushover": {"enabled": False, "user": "", "token": ""},
+        "email": {"enabled": False, "host": "", "port": 587, "security": "starttls", "username": "", "password": "",
+                  "from": "", "to": ""},
     },
     "alerts": {
         "down_after_s": 180, "send_recovery": True, "repeat_every_s": 0, "group_window_s": 60,
@@ -58,11 +65,28 @@ SECRET = ("str", r"[^\r\n]{0,512}")
 BOOL = ("bool",)
 PCT = _int(1, 100)
 DAYS = _int(0, 3650)
+_ADDR = r"[^@\s,<>]{1,64}@[^@\s,<>]{1,190}"
+EMAIL = ("str", rf"(?:{_ADDR})?")
+EMAILS = ("str", rf"(?:\s*{_ADDR}(?:\s*,\s*{_ADDR}){{0,9}}\s*)?")
+HOST = ("str", r"[A-Za-z0-9.:\[\]-]{0,253}")
+KEY = ("str", r"[A-Za-z0-9]{0,40}")
+TG_TOKEN = ("str", r"(?:\d{3,15}:[A-Za-z0-9_-]{20,60})?")
+TG_CHAT = ("str", r"(?:-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{3,63})?")
+
+# (channel, field) holding a secret: masked on the way out, restored when the browser sends the mask back
+SECRETS = (("ntfy", "token"), ("discord", "url"), ("telegram", "token"), ("gotify", "token"),
+           ("pushover", "user"), ("pushover", "token"), ("email", "password"))
 
 SCHEMA = {
     "notify": {
         "webhook": {"enabled": BOOL, "url": URL, "headers": HEADERS, "insecure": BOOL},
         "ntfy": {"enabled": BOOL, "server": URL, "topic": TOPIC, "token": SECRET, "insecure": BOOL},
+        "discord": {"enabled": BOOL, "url": URL},
+        "telegram": {"enabled": BOOL, "token": TG_TOKEN, "chat_id": TG_CHAT},
+        "gotify": {"enabled": BOOL, "server": URL, "token": SECRET, "insecure": BOOL},
+        "pushover": {"enabled": BOOL, "user": KEY, "token": KEY},
+        "email": {"enabled": BOOL, "host": HOST, "port": _int(1, 65535), "security": ("str", r"starttls|ssl|none"),
+                  "username": SECRET, "password": SECRET, "from": EMAIL, "to": EMAILS},
     },
     "alerts": {
         "down_after_s": _int(0, 86400), "send_recovery": BOOL, "repeat_every_s": _int(0, 7 * 86400),
@@ -145,6 +169,14 @@ def validate(doc):
     n = d["notify"]["ntfy"]
     if n["enabled"] and (not n["topic"] or not n["server"]):
         raise SettingsError("notify.ntfy.topic", "is needed when ntfy is on")
+    for channel, fields in (("discord", ("url",)), ("telegram", ("token", "chat_id")), ("gotify", ("server", "token")),
+                            ("pushover", ("user", "token")), ("email", ("host", "from", "to"))):
+        c = d["notify"][channel]
+        for f in fields:
+            if c["enabled"] and not c[f]:
+                raise SettingsError(f"notify.{channel}.{f}", f"is needed when {channel} is on")
+    if d["notify"]["email"]["username"] and not d["notify"]["email"]["password"]:
+        raise SettingsError("notify.email.password", "is needed with a username")
     return d
 
 
@@ -154,7 +186,8 @@ def _mask(v):
 
 def mask(doc):
     d = copy.deepcopy(doc)
-    d["notify"]["ntfy"]["token"] = _mask(d["notify"]["ntfy"]["token"])
+    for channel, f in SECRETS:
+        d["notify"][channel][f] = _mask(d["notify"][channel][f])
     d["notify"]["webhook"]["headers"] = {k: _mask(v) for k, v in d["notify"]["webhook"]["headers"].items()}
     return d
 
@@ -163,8 +196,10 @@ def merge_masked(new, old):
     """A settings document from the browser carries masked secrets; put the real ones back."""
     d = copy.deepcopy(new)
     try:
-        if str(d["notify"]["ntfy"]["token"]).startswith(MASK):
-            d["notify"]["ntfy"]["token"] = old["notify"]["ntfy"]["token"]
+        for channel, f in SECRETS:
+            c = d["notify"].get(channel)
+            if isinstance(c, dict) and str(c.get(f, "")).startswith(MASK):
+                c[f] = old["notify"].get(channel, {}).get(f, "")
         hdrs = d["notify"]["webhook"]["headers"]
         if isinstance(hdrs, dict):
             for k, v in hdrs.items():

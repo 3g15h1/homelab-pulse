@@ -23,7 +23,7 @@ class Notification:
     state: str                     # fire | resolve | repeat | update | summary | test
     items: list = field(default_factory=list)
     ts: float = 0.0
-    net_down: bool = False         # internet is down: ntfy can't deliver, skip it
+    net_down: bool = False         # internet is down: cloud channels can't deliver, skip them
 
 
 def _minutes(hhmm):
@@ -236,7 +236,7 @@ class AlertEngine:
                 return it["title"]
             return f"Still: {it['title']}" if it["state"] == "repeat" else it["title"]
 
-        suffix = " (internet is down \u2014 ntfy skipped)" if net_down else ""
+        suffix = " (internet is down \u2014 cloud notification channels skipped)" if net_down else ""
         if len(items) == 1:
             it = items[0]
             message = line(it) + (f"\n{it['note']}" if it.get("note") and it["state"] == "fire" else "") + suffix

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.0 — 2026-10-16
+
+- **More notification channels:** Discord, Telegram, Gotify, Pushover and email (SMTP with STARTTLS,
+  SSL/TLS or a plain local relay), next to the webhook and ntfy. Each has a **Send test** button on the
+  settings page. Severity maps to each service's priority or colour, and secrets are masked like the ntfy
+  token. Channels that can't POST back link to the settings page for fixes waiting for approval.
+- **Internet outages:** only channels that need the internet are skipped. A self-hosted ntfy, Gotify or
+  mail server on the LAN is now still tried (before, ntfy was always skipped).
+
 ## 1.4.0 — 2026-10-16
 
 - **Separate Proxmox hosts:** watch a second server that isn't in your cluster. `install.sh --add-host <IP>`

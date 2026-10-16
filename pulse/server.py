@@ -221,8 +221,8 @@ def make_handler(collector):
                 return self._send(200, {"ok": True}, cookie=self._cookie("", 0))
             if path == "/api/test-notify":
                 channel = self._body().get("channel")
-                if channel not in ("webhook", "ntfy"):
-                    raise _HttpError(400, "channel must be webhook or ntfy")
+                if channel not in notify.CHANNELS:
+                    raise _HttpError(400, f"channel must be one of {', '.join(notify.CHANNELS)}")
                 n = alerts.Notification("Test from Homelab Pulse", "If you can read this, alerts will reach you.",
                                         "info", "test", [], collector.clock())
                 results = collector.notifier.send_now(n, collector.settings_loader()["notify"], channel=channel)
