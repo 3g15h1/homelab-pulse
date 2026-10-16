@@ -48,13 +48,27 @@ class SessionTests(unittest.TestCase):
     def test_cookie_valid_expired_tampered(self):
         c = self.sessions.issue()
         self.assertTrue(self.sessions.valid(c))
-        exp, sid, sig = c.split(".")
-        self.assertFalse(self.sessions.valid(f"{int(exp) + 10}.{sid}.{sig}"))
-        self.assertFalse(self.sessions.valid(f"{exp}.{sid}.{sig[:-2]}aa"))
+        exp, role, sid, sig = c.split(".")
+        self.assertEqual(role, "admin")
+        self.assertFalse(self.sessions.valid(f"{int(exp) + 10}.{role}.{sid}.{sig}"))
+        self.assertFalse(self.sessions.valid(f"{exp}.{role}.{sid}.{sig[:-2]}aa"))
+        self.assertIsNone(self.sessions.role(f"{exp}.viewer.{sid}.{sig}"))      # can't promote/demote by editing
         self.assertFalse(self.sessions.valid(None))
         self.assertFalse(self.sessions.valid("nonsense"))
         self.clock.t += auth.SESSION_MAX_AGE + 1
         self.assertFalse(self.sessions.valid(c))
+
+    def test_roles(self):
+        v = self.sessions.issue("viewer")
+        self.assertEqual(self.sessions.role(v), "viewer")
+        self.assertFalse(self.sessions.valid(v))                          # valid() means admin
+        self.assertEqual(self.sessions.role(self.sessions.issue()), "admin")
+
+    def test_pre_roles_cookie_is_admin(self):
+        exp = int(self.clock()) + 100
+        payload = f"{exp}.abcdef"
+        old = f"{payload}.{self.sessions._sign(payload)}"
+        self.assertEqual(self.sessions.role(old), "admin")
 
     def test_secret_persists_in_store(self):
         c = self.sessions.issue()
@@ -112,3 +126,37 @@ class PasswdCliTests(unittest.TestCase):
         pw = r.stdout.strip().split()[-1]
         self.assertGreaterEqual(len(pw), 16)
         self.assertTrue(auth.verify_password(pw, store.Store(db).get("admin")))
+
+
+class AccessTests(unittest.TestCase):
+    def setUp(self):
+        self.store = store.Store(":memory:")
+
+    def test_viewer_password(self):
+        with self.assertRaises(ValueError):
+            auth.set_viewer_password(self.store, "short")
+        auth.set_viewer_password(self.store, "family-tablet-1")
+        self.assertTrue(auth.verify_password("family-tablet-1", self.store.get("viewer")))
+        auth.set_viewer_password(self.store, "")
+        self.assertIsNone(self.store.get("viewer"))
+
+    def test_view_links(self):
+        link, token = auth.create_view_link(self.store, "Kitchen tablet", 100.0)
+        self.assertNotIn("hash", link)
+        self.assertNotIn(token, str(self.store.get("view_links")))         # only the hash is stored
+        self.assertTrue(auth.check_view_token(self.store, token, 1000.0))
+        self.assertEqual(auth.list_view_links(self.store)[0]["last_used"], 1000.0)
+        self.assertFalse(auth.check_view_token(self.store, token + "x"))
+        self.assertFalse(auth.check_view_token(self.store, ""))
+        self.assertTrue(auth.revoke_view_link(self.store, link["id"]))
+        self.assertFalse(auth.check_view_token(self.store, token))
+
+    def test_proxy_user(self):
+        cfg = {"enabled": True, "header": "Remote-User", "from": "192.168.1.5, 10.0.0.0/24", "admins": "Alice"}
+        self.assertEqual(auth.proxy_user(cfg, "192.168.1.5", {"Remote-User": "alice"}), ("alice", "admin"))
+        self.assertEqual(auth.proxy_user(cfg, "10.0.0.9", {"Remote-User": "bob"}), ("bob", "viewer"))
+        self.assertEqual(auth.proxy_user(cfg, "192.168.1.6", {"Remote-User": "alice"}), (None, None))   # not the proxy
+        self.assertEqual(auth.proxy_user(cfg, "192.168.1.5", {}), (None, None))
+        self.assertEqual(auth.proxy_user(dict(cfg, enabled=False), "192.168.1.5", {"Remote-User": "alice"}), (None, None))
+        with self.assertRaises(ValueError):
+            auth.parse_networks("192.168.1.0/24, nope")

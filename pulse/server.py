@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Homelab Pulse: a live, self-discovering map of a Proxmox homelab. Python stdlib only.
 
-Routes (open):     /  (UI, ?embed hides header/footer)  /settings  /api/state  /api/stream (SSE)
-                   /api/history/<vmid|node>  /api/rrd/<vmid|node>?range=  /api/uptime  /api/session  /healthz
-Routes (admin):    /api/login /api/logout /api/settings /api/test-notify /api/deliveries /api/mutes
-                   /api/password /api/alerts/<key>/clear  (writes also need the X-Pulse-Request header)
+Routes (viewers):  /  (UI, ?embed hides header/footer)  /api/state  /api/stream (SSE)
+                   /api/history/<vmid|node>  /api/rrd/<vmid|node>?range=  /api/uptime
+                   Open to everyone unless the dashboard needs a login (settings: access.dashboard); then
+                   a session cookie, a view link (?token=) or a trusted proxy's user header is needed.
+Routes (open):     /settings  /login  /api/session  /api/login  /api/logout  /healthz (just ok/not ok behind a login)
+Routes (admin):    /api/settings /api/test-notify /api/deliveries /api/mutes /api/password /api/access/…
+                   /api/alerts/<key>/clear  (writes also need the X-Pulse-Request header)
 Config comes from the environment (see env.example) and the optional overrides file.
 """
 import json
@@ -145,8 +148,28 @@ def make_handler(collector):
                     return v
             return None
 
+        def _who(self):
+            """(role, how): role is 'admin', 'viewer' or None; how is 'session', 'proxy:<user>' or 'link'."""
+            role = sessions.role(self._cookie_value())
+            if role:
+                return role, "session"
+            user, role = auth.proxy_user(settings_mod.load(st)["access"]["proxy"], self.client_address[0], self.headers)
+            if role:
+                return role, f"proxy:{user}"
+            token = urllib.parse.parse_qs(self.path.partition("?")[2]).get("token", [None])[0] or self.headers.get("X-Pulse-Token")
+            if token and auth.check_view_token(st, token, collector.clock()):
+                return "viewer", "link"
+            return None, None
+
         def _signed_in(self):
-            return sessions.valid(self._cookie_value())
+            return self._who()[0] == "admin"
+
+        def _login_required(self):
+            return settings_mod.load(st)["access"]["dashboard"] == "login"
+
+        def _need_view(self):
+            if self._login_required() and not self._who()[0]:
+                raise _HttpError(401, "sign in to view this dashboard")
 
         def _cookie(self, value, max_age):
             secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
@@ -211,14 +234,27 @@ def make_handler(collector):
                 pw = str(self._body().get("password", ""))
                 if not st.get("admin"):
                     raise _HttpError(503, "no admin password set; run homelab-pulse-passwd in the container")
-                if not auth.verify_password(pw, st.get("admin")):
+                if auth.verify_password(pw, st.get("admin")):
+                    role = "admin"
+                elif st.get("viewer") and auth.verify_password(pw, st.get("viewer")):
+                    role = "viewer"                # view-only: the dashboard, never the settings
+                else:
                     limiter.fail(ip)
-                    log.warning("failed settings sign-in from %s", ip)
+                    log.warning("failed sign-in from %s", ip)
                     raise _HttpError(401, "wrong password")
-                return self._send(200, {"ok": True}, cookie=self._cookie(sessions.issue(), auth.SESSION_MAX_AGE))
-            self._guard()
+                return self._send(200, {"ok": True, "role": role},
+                                  cookie=self._cookie(sessions.issue(role), auth.SESSION_MAX_AGE))
             if path == "/api/logout":
+                self._guard(need_session=False)
                 return self._send(200, {"ok": True}, cookie=self._cookie("", 0))
+            self._guard()
+            if path == "/api/access/links":
+                name = str(self._body().get("name", "")).strip()[:60] or "View link"
+                try:
+                    link, token = auth.create_view_link(st, name, collector.clock())
+                except ValueError as e:
+                    raise _HttpError(400, str(e)) from None
+                return self._send(200, {"link": link, "token": token})
             if path == "/api/test-notify":
                 channel = self._body().get("channel")
                 if channel not in notify.CHANNELS:
@@ -269,6 +305,16 @@ def make_handler(collector):
 
         def _put(self):
             path = urllib.parse.unquote(self.path.split("?", 1)[0])
+            if path == "/api/access/viewer":
+                self._guard()
+                try:
+                    auth.set_viewer_password(st, str(self._body().get("password") or ""))
+                except ValueError as e:
+                    raise _HttpError(400, str(e)) from None
+                via_session = self._who()[1] == "session"
+                sessions.rotate()                  # whoever signed in with the old viewer password is out
+                cookie = self._cookie(sessions.issue("admin"), auth.SESSION_MAX_AGE) if via_session else None
+                return self._send(200, {"ok": True, "viewer_set": bool(st.get("viewer"))}, cookie=cookie)
             if path == "/api/heal/settings":
                 self._guard()
                 b = self._body()
@@ -311,6 +357,12 @@ def make_handler(collector):
 
         def _delete(self):
             path = urllib.parse.unquote(self.path.split("?", 1)[0])
+            m = re.fullmatch(r"/api/access/links/([0-9a-f]{8})", path)
+            if m:
+                self._guard()
+                if not auth.revoke_view_link(st, m.group(1)):
+                    raise _HttpError(404, "no such link")
+                return self._send(200, {"ok": True})
             if not path.startswith("/api/mutes/"):
                 raise _HttpError(404, "not found")
             self._guard()
@@ -323,6 +375,8 @@ def make_handler(collector):
                 return self._send(200, {"settings": settings_mod.mask(settings_mod.load(st)), "demo": demo_mode})
             if path == "/api/deliveries":
                 return self._send(200, {"deliveries": st.deliveries()})
+            if path == "/api/access":
+                return self._send(200, {"viewer_set": bool(st.get("viewer")), "links": auth.list_view_links(st)})
             return self._send(200, {"mutes": st.list_mutes(collector.clock())})
 
         def do_GET(self):
@@ -330,14 +384,20 @@ def make_handler(collector):
 
         def _get(self):
             path, _, query = self.path.partition("?")
-            if path in ("/api/settings", "/api/deliveries", "/api/mutes"):
+            if path in ("/api/settings", "/api/deliveries", "/api/mutes", "/api/access"):
                 return self._get_admin(path)
             if path == "/api/heal":
                 self._need_session()
                 return self._send(200, collector.heal_overview())
             if path == "/api/session":
-                return self._send(200, {"signed_in": self._signed_in(), "admin_set": bool(st.get("admin")),
+                role, how = self._who()
+                return self._send(200, {"signed_in": role == "admin", "role": role, "via": how,
+                                        "admin_set": bool(st.get("admin")), "login_required": self._login_required(),
                                         "demo": demo_mode})
+            if path in ("/", "/index.html") and self._login_required() and not self._who()[0]:
+                return self._redirect("login" + (f"?next={urllib.parse.quote(query)}" if query else ""))
+            if path in ("/api/uptime", "/api/state", "/api/stream") or path.startswith(("/api/rrd/", "/api/history/")):
+                self._need_view()
             if path == "/api/uptime":
                 return self._send(200, collector.uptime())
             if path.startswith("/api/rrd/"):
@@ -345,8 +405,8 @@ def make_handler(collector):
                 rng = urllib.parse.parse_qs(query).get("range", ["day"])[0]
                 series = collector.rrd_series(int(key) if key.isdigit() else key, rng) if "/" not in key else None
                 return self._send(200, series) if series else self._send(404, {"error": "unknown"})
-            if path == "/settings":
-                path = "/settings.html"
+            if path in ("/settings", "/login"):
+                path += ".html"
             if path == "/":
                 path = "/index.html"
             if path == "/api/state":
@@ -356,6 +416,8 @@ def make_handler(collector):
             if path == "/healthz":
                 src = collector.snapshot()["sources"]
                 ok = all(src[k]["ok"] is not False for k in HEALTH_SOURCES if k in src)
+                if self._login_required() and not self._who()[0]:      # error texts name hosts: viewers only
+                    src = {k: {"ok": v.get("ok")} for k, v in src.items()}
                 return self._send(200 if ok else 503, {"ok": ok, "sources": src})
             if path.startswith("/api/history/"):
                 key = urllib.parse.unquote(path[len("/api/history/"):])
@@ -365,6 +427,13 @@ def make_handler(collector):
             if f.parent == STATIC and f.is_file() and f.suffix in CONTENT_TYPES:
                 return self._send(200, f.read_bytes(), CONTENT_TYPES[f.suffix], "no-cache")
             return self._send(404, {"error": "not found"})
+
+        def _redirect(self, location):
+            self.send_response(302)
+            self.send_header("Location", location)         # relative: works under a proxy's sub-path
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
 
         def _stream(self):
             self.send_response(200)
@@ -378,6 +447,8 @@ def make_handler(collector):
                     with collector.cond:
                         collector.cond.wait_for(lambda: collector.version != seen, timeout=15)
                         changed = collector.version != seen
+                    if self._login_required() and not self._who()[0]:
+                        break                      # signed out, link revoked or sign-in just turned on
                     if changed:
                         snap = collector.snapshot()
                         seen = snap["version"]

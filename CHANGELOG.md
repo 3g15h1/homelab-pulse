@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6.0 — 2026-10-16
+
+- **Optional sign-in for the dashboard** (Settings → Access; open by default, as before). The admin password
+  works on the new sign-in page, and so does an optional view-only **viewer password**.
+- **View links:** revocable, view-only links for wall tablets and Home Assistant webpage cards (no cookies needed).
+  Only a hash of each token is stored, and each link shows when it was last used.
+- **Login proxy support:** trust Authelia/Authentik/oauth2-proxy's user header, only from the proxy addresses you
+  list. Users you name may also change settings.
+- **Works under a sub-path** (e.g. `/pulse/` behind a reverse proxy): every page and API call uses relative URLs.
+- Viewers signed in with a password get a sign-out button. `/healthz` hides error details behind a sign-in.
+- Admin sessions from earlier versions stay valid.
+
 ## 1.5.0 — 2026-10-16
 
 - **More notification channels:** Discord, Telegram, Gotify, Pushover and email (SMTP with STARTTLS,

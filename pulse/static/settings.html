@@ -141,7 +141,7 @@
 <body>
 <div class="wrap">
   <header>
-    <a href="/">← Pulse</a>
+    <a href="./">← Pulse</a>
     <h1>Settings</h1>
     <div class="right">
       <div class="pill" id="pill" hidden><span class="dot ok" id="pillDot"></span><span id="pillText">Alerting on</span></div>
@@ -152,7 +152,7 @@
 
   <section class="card" id="login" hidden>
     <h2>Sign in</h2>
-    <p class="muted small" id="loginHelp">Viewing the dashboard is open to everyone; changing settings needs the admin password.
+    <p class="muted small" id="loginHelp">Changing settings needs the admin password.
       The installer printed it; you can set a new one in the Pulse container with <code>homelab-pulse-passwd</code>.</p>
     <form id="loginForm">
       <label class="f"><span>Admin password</span><input type="password" id="pw" autocomplete="current-password" required></label>
@@ -301,6 +301,50 @@
     </section>
 
     <section class="card">
+      <h2>Access</h2>
+      <p class="sub">Who can see the dashboard. Changing settings always needs the admin password.</p>
+      <div class="state-line" id="accessState"><span class="muted">Loading…</span></div>
+      <div class="rowline">
+        <div class="grow"><div class="t">Dashboard needs a sign-in</div>
+          <div class="d">Off: anyone who can reach Pulse sees the dashboard. On: a password, a view link or your login proxy is needed.</div></div>
+        <div class="toggle" role="switch" id="accessToggle" tabindex="0" aria-checked="false" aria-label="Dashboard needs a sign-in"></div>
+      </div>
+      <h3 class="sub">Viewer password</h3>
+      <div class="note" id="viewerState">Loading…</div>
+      <form id="viewerForm" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+        <label class="f" style="flex:1;min-width:200px"><span>New viewer password (10+ characters; view-only)</span>
+          <input type="password" id="viewer_pw" autocomplete="new-password" minlength="10"></label>
+        <button type="submit" style="flex:0 0 auto">Set</button>
+        <button type="button" class="ghost" id="viewerClear" style="flex:0 0 auto">Remove</button>
+      </form>
+      <h3 class="sub">View links</h3>
+      <div class="note">For a wall tablet, or a Home Assistant webpage card: the link signs in by itself and can only view.
+        Revoke it here if it leaks.</div>
+      <div class="list" id="linkList"><span class="muted">Loading…</span></div>
+      <form id="linkForm" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+        <label class="f" style="flex:1;min-width:200px"><span>Name</span><input type="text" id="link_name" maxlength="60" placeholder="Kitchen tablet"></label>
+        <button type="submit" style="flex:0 0 auto">Create link</button>
+      </form>
+      <div class="editbox" id="linkNew" hidden>
+        <div class="note">Copy it now; it isn't shown again.</div>
+        <label class="f"><span>Dashboard link</span><input type="text" id="link_url" readonly></label>
+        <label class="f"><span>Embed link (no header, for iframes)</span><input type="text" id="link_embed" readonly></label>
+      </div>
+      <h3 class="sub">Login proxy (single sign-on)</h3>
+      <div class="rowline">
+        <div class="grow"><div class="t">Trust a login proxy</div>
+          <div class="d">Authelia, Authentik, oauth2-proxy… in front of Pulse send the signed-in user in a header.</div></div>
+        <div class="toggle" role="switch" id="proxyToggle" tabindex="0" aria-checked="false" aria-label="Trust a login proxy"></div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <label class="f" style="flex:1;min-width:160px"><span>User header</span><input type="text" id="px_header" placeholder="Remote-User"></label>
+        <label class="f" style="flex:2;min-width:220px"><span>Proxy addresses (only these may send it)</span><input type="text" id="px_from" placeholder="192.168.1.20, 10.0.0.0/24"></label>
+      </div>
+      <label class="f"><span>Users who may also change settings (comma-separated; others can only view)</span><input type="text" id="px_admins" placeholder="alice, bob"></label>
+      <div class="note">Make sure Pulse itself is only reachable through the proxy, or anyone at a listed address could send the header.</div>
+    </section>
+
+    <section class="card">
       <h2>Activity</h2>
       <p class="sub">What Pulse has done recently — notifications sent and fixes attempted.</p>
       <div class="chips" id="actFilter">
@@ -342,7 +386,7 @@ const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); if (s < 60)
 let CFG = null, STATE = null, HEAL = null, MUTES = [], DELIVERIES = [];
 
 async function api(method, path, body) {
-  const r = await fetch(path, { method, headers: { "X-Pulse-Request": "1", "Content-Type": "application/json" },
+  const r = await fetch("." + path, { method, headers: { "X-Pulse-Request": "1", "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin" });
   let data = null; try { data = await r.json(); } catch { /* empty body */ }
   if (r.status === 401 && path !== "/api/login") showLogin();
@@ -360,6 +404,7 @@ function showLogin() { $("login").hidden = false; $("app").hidden = true; $("sig
 $("loginForm").onsubmit = async (e) => {
   e.preventDefault();
   const r = await api("POST", "/api/login", { password: $("pw").value });
+  if (r.ok && r.data.role === "viewer") { $("pw").value = ""; $("loginMsg").textContent = "That's the viewer password: it opens the dashboard, not the settings."; return; }
   if (r.ok) { $("pw").value = ""; $("loginMsg").textContent = ""; start(); }
   else $("loginMsg").textContent = r.data.error || "Sign-in failed";
 };
@@ -405,6 +450,7 @@ function fill(c) {
   $("nt_server").value = n.server; $("nt_topic").value = n.topic; $("nt_token").value = n.token;
   $("nt_insecure").checked = n.insecure; setToggle("ntToggle", n.enabled);
   fillMore(c);
+  fillAccess(c);
   $("kinds").innerHTML = KINDS.map(([k, label]) =>
     `<div class="rowline"><div class="grow"><div class="t">${esc(label)}</div></div>
      <div class="toggle" role="switch" id="k_${k}" tabindex="0" aria-checked="${a.kinds[k] ? "true" : "false"}" aria-label="${esc(label)}"></div></div>`).join("");
@@ -447,6 +493,7 @@ function collect() {
   n.enabled = isOn("ntToggle"); n.server = $("nt_server").value.trim() || "https://ntfy.sh";
   n.topic = $("nt_topic").value.trim(); n.token = $("nt_token").value.trim(); n.insecure = $("nt_insecure").checked;
   collectMore(c);
+  collectAccess(c);
   for (const [k] of KINDS) a.kinds[k] = isOn(`k_${k}`);
   a.down_after_s = num("downMinVal") * 60; a.group_window_s = num("groupSecs"); a.repeat_every_s = num("remindHVal") * 3600;
   a.send_recovery = isOn("recToggle");
@@ -476,6 +523,7 @@ function fieldIdFor(path) {
   if (direct[path]) return direct[path];
   const m = /^notify\.(\w+)\.(\w+)$/.exec(path);
   if (m && MORE[m[1]]) return `${m[1]}_${m[2]}`;
+  if (path.startsWith("access.proxy.")) return `px_${path.split(".")[2]}`;
   if (path.startsWith("warnings.")) { const [, rule, f] = path.split("."); return `w_${rule}_${f}`; }
   return null;
 }
@@ -636,7 +684,7 @@ function targetLabel(t) {
   return t;
 }
 async function loadState() {
-  try { STATE = await (await fetch("/api/state")).json(); } catch { return; }
+  try { STATE = await (await fetch("./api/state")).json(); } catch { return; }
   const a = STATE.attention || [];
   $("attnList").innerHTML = a.length ? a.map((x) => `<div class="banner-attn"><span class="dot ${esc(x.severity)}"></span>
     <b>${x.muted ? "🔕 " : ""}${esc(x.title)}</b><br>
@@ -841,6 +889,62 @@ async function loadHeal() {
   renderStatusStrip(); renderActivity();
 }
 
+/* ---------- access ---------- */
+let ACCESS = { viewer_set: false, links: [] };
+function fillAccess(c) {
+  const a = c.access;
+  setToggle("accessToggle", a.dashboard === "login"); setToggle("proxyToggle", a.proxy.enabled);
+  $("px_header").value = a.proxy.header; $("px_from").value = a.proxy.from; $("px_admins").value = a.proxy.admins;
+  renderAccess();
+}
+function collectAccess(c) {
+  c.access.dashboard = isOn("accessToggle") ? "login" : "open";
+  c.access.proxy = { enabled: isOn("proxyToggle"), header: $("px_header").value.trim() || "Remote-User",
+                     from: $("px_from").value.trim(), admins: $("px_admins").value.trim() };
+}
+function renderAccess() {
+  if (!CFG) return;
+  const login = CFG.access.dashboard === "login";
+  const ways = [ACCESS.viewer_set ? "the viewer password" : null, ACCESS.links.length ? `${ACCESS.links.length} view link${ACCESS.links.length === 1 ? "" : "s"}` : null,
+    CFG.access.proxy.enabled ? "your login proxy" : null, "the admin password"].filter(Boolean);
+  $("accessState").innerHTML = login ? `The dashboard needs a sign-in: <b>${ways.map(esc).join("</b>, <b>")}</b>.`
+    : `The dashboard is <b>open</b> to anyone who can reach Pulse.`;
+  $("viewerState").textContent = ACCESS.viewer_set ? "A viewer password is set. It opens the dashboard, never the settings."
+    : "No viewer password: only the admin password signs in.";
+  $("viewerClear").disabled = !ACCESS.viewer_set;
+  $("linkList").innerHTML = ACCESS.links.length ? ACCESS.links.map((x) => `<div class="rowline"><div class="grow"><div class="t">${esc(x.name)}</div>
+    <div class="d">created ${ago(x.created)} · ${x.last_used ? "last used " + ago(x.last_used) : "not used yet"}</div></div>
+    <button class="ghost" data-revoke="${esc(x.id)}">Revoke</button></div>`).join("") : '<span class="muted">No view links.</span>';
+  $("linkList").querySelectorAll("[data-revoke]").forEach((b) => b.onclick = async () => {
+    const r = await api("DELETE", `/api/access/links/${b.dataset.revoke}`);
+    toast(r.ok ? "Revoked ✓" : (r.data.error || "Not revoked"), !r.ok); loadAccess();
+  });
+}
+async function loadAccess() {
+  const r = await api("GET", "/api/access"); if (!r.ok) return;
+  ACCESS = r.data; renderAccess();
+}
+bindToggle("accessToggle", autoSave); bindToggle("proxyToggle", autoSave);
+for (const id of ["px_header", "px_from", "px_admins"]) $(id).addEventListener("change", autoSave);
+$("viewerForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await api("PUT", "/api/access/viewer", { password: $("viewer_pw").value });
+  toast(r.ok ? "Viewer password set ✓" : (r.data.error || "Not set"), !r.ok);
+  if (r.ok) { $("viewer_pw").value = ""; loadAccess(); }
+};
+$("viewerClear").onclick = async () => {
+  const r = await api("PUT", "/api/access/viewer", { password: "" });
+  toast(r.ok ? "Viewer password removed ✓" : (r.data.error || "Not removed"), !r.ok); loadAccess();
+};
+$("linkForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = await api("POST", "/api/access/links", { name: $("link_name").value });
+  if (!r.ok) { toast(r.data.error || "Not created", true); return; }
+  const base = new URL("./", location.href).href, t = encodeURIComponent(r.data.token);
+  $("link_url").value = `${base}?token=${t}`; $("link_embed").value = `${base}?embed&token=${t}`;
+  $("linkNew").hidden = false; $("link_name").value = ""; $("link_url").select(); loadAccess();
+};
+
 /* ---------- password ---------- */
 $("pwForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -851,13 +955,13 @@ $("pwForm").onsubmit = async (e) => {
 
 /* ---------- start ---------- */
 async function start() {
-  const s = await (await fetch("/api/session")).json();
+  const s = await (await fetch("./api/session")).json();
   $("demoNote").hidden = !s.demo;
   if (!s.admin_set) $("loginHelp").textContent = "No admin password is set yet. In the Pulse container run: homelab-pulse-passwd";
   if (!s.signed_in) { showLogin(); return; }
   const r = await api("GET", "/api/settings"); if (!r.ok) return;
   $("login").hidden = true; $("app").hidden = false; $("signout").hidden = false;
-  fill(r.data.settings); loadState(); loadMutes(); loadDeliveries(); loadHeal();
+  fill(r.data.settings); loadState(); loadMutes(); loadDeliveries(); loadHeal(); loadAccess();
   renderMuteAdd();
 }
 start();

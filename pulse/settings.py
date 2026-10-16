@@ -7,6 +7,8 @@ as "••••" + last 4.
 import copy
 import re
 
+from auth import parse_networks
+
 MASK = "••••"
 
 DEFAULTS = {
@@ -42,6 +44,9 @@ DEFAULTS = {
         "pve_updates": {"enabled": False},
     },
     "heal": {"mode": "dry_run", "recipes": {}},
+    # who may view the dashboard: "open" (anyone on the network) or "login"; see auth.py
+    "access": {"dashboard": "open",
+               "proxy": {"enabled": False, "header": "Remote-User", "from": "", "admins": ""}},
 }
 
 
@@ -108,6 +113,9 @@ SCHEMA = {
         "pve_updates": {"enabled": BOOL},
     },
     "heal": {"mode": HEAL_MODE, "recipes": RECIPE_MODES},
+    "access": {"dashboard": ("str", r"open|login"),
+               "proxy": {"enabled": BOOL, "header": ("str", r"[A-Za-z0-9-]{1,64}"), "from": ("networks",),
+                         "admins": ("str", r"[^\r\n]{0,512}")}},
 }
 
 
@@ -128,6 +136,13 @@ def _check(spec, value, path):
     elif kind == "time":
         if not isinstance(value, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
             raise SettingsError(path, "must be a time like 23:00")
+    elif kind == "networks":
+        try:
+            if not isinstance(value, str) or len(value) > 512:
+                raise ValueError
+            parse_networks(value)
+        except ValueError:
+            raise SettingsError(path, "must be IP addresses or networks, comma-separated (e.g. 192.168.1.5, 10.0.0.0/24)") from None
     elif kind == "recipe_modes":
         if not isinstance(value, dict) or len(value) > 200:
             raise SettingsError(path, "must map recipe ids to a mode")
@@ -175,6 +190,9 @@ def validate(doc):
         for f in fields:
             if c["enabled"] and not c[f]:
                 raise SettingsError(f"notify.{channel}.{f}", f"is needed when {channel} is on")
+    px = d["access"]["proxy"]
+    if px["enabled"] and not px["from"].strip():
+        raise SettingsError("access.proxy.from", "is needed: the proxy's address, so nobody else can send the header")
     if d["notify"]["email"]["username"] and not d["notify"]["email"]["password"]:
         raise SettingsError("notify.email.password", "is needed with a username")
     return d

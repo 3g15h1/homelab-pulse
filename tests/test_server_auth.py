@@ -74,7 +74,8 @@ class AuthApiTests(unittest.TestCase):
         self.cl = Client(self.base)
 
     def test_login_logout_flow(self):
-        self.assertEqual(self.cl.req("GET", "/api/session")[1], {"signed_in": False, "admin_set": True, "demo": True})
+        self.assertEqual(self.cl.req("GET", "/api/session")[1], {"signed_in": False, "role": None, "via": None, "admin_set": True,
+                                                                  "login_required": False, "demo": True})
         code, body, h = self.cl.login()
         self.assertEqual(code, 200)
         cookie = h["Set-Cookie"]

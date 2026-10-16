@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#09090b">
+<title>Sign in — Homelab Pulse</title>
+<link rel="icon" href="icon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+  :root { --bg:#09090b; --card:#131316; --line:rgba(255,255,255,.06); --line2:rgba(255,255,255,.1);
+    --text:#ececef; --dim:#8b8b94; --accent:#a5b4fc; --bad:#f87171; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); min-height: 100%; }
+  body { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased;
+    display: grid; place-items: center; min-height: 100vh; padding: 20px; }
+  .card { width: 100%; max-width: 360px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .brand img { width: 26px; height: 26px; }
+  h1 { font-size: 17px; font-weight: 650; margin: 0; }
+  p { color: var(--dim); font-size: 13px; margin: 0 0 14px; }
+  label span { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
+  input { width: 100%; background: #0e0e11; border: 1px solid var(--line2); color: var(--text); border-radius: 10px;
+    padding: 10px 12px; font: inherit; }
+  input:focus { outline: 2px solid rgba(165,180,252,.5); outline-offset: 0; }
+  button { margin-top: 12px; width: 100%; background: var(--accent); color: #0b0b12; border: 0; border-radius: 10px;
+    padding: 10px; font: inherit; font-weight: 650; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .msg { min-height: 20px; margin-top: 10px; font-size: 13px; color: var(--bad); }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand"><img src="icon.svg" alt=""><h1>Homelab Pulse</h1></div>
+  <p>This dashboard needs a sign-in. Use the viewer password, or the admin password.</p>
+  <form id="f">
+    <label><span>Password</span><input type="password" id="pw" autocomplete="current-password" required autofocus></label>
+    <button type="submit" id="go">Sign in</button>
+    <div class="msg" id="msg" role="alert"></div>
+  </form>
+</main>
+<script>
+// Relative URLs throughout, so this works under a reverse proxy's sub-path (e.g. /pulse/).
+const next = new URLSearchParams(location.search).get("next") || "";
+const target = "./" + (/^[\w&=%.-]*$/.test(next) && next ? "?" + next : "");
+fetch("api/session").then((r) => r.json()).then((s) => { if (s.role || !s.login_required) location.replace(target); }).catch(() => {});
+document.getElementById("f").onsubmit = async (e) => {
+  e.preventDefault();
+  const go = document.getElementById("go"), msg = document.getElementById("msg");
+  go.disabled = true; msg.textContent = "";
+  try {
+    const r = await fetch("api/login", { method: "POST", headers: { "Content-Type": "application/json", "X-Pulse-Request": "1" },
+      body: JSON.stringify({ password: document.getElementById("pw").value }) });
+    if (r.ok) { location.replace(target); return; }
+    msg.textContent = r.status === 429 ? "Too many attempts. Wait a minute." : r.status === 401 ? "Wrong password." : "Sign-in failed.";
+  } catch { msg.textContent = "Pulse isn't answering."; }
+  go.disabled = false;
+};
+</script>
+</body>
+</html>

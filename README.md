@@ -200,9 +200,29 @@ It only warns about a steady trend, not a one-off copy.
 - **Survives restarts:** check results (90 days), the activity feed (30 days), alert state and settings are
   kept in a small SQLite file, `/var/lib/homelab-pulse/pulse.db`.
 
+## Who can see the dashboard
+
+Out of the box the dashboard is open to anyone who can reach Pulse, and changing settings needs the
+admin password. On **Settings → Access** you can lock the dashboard too:
+
+- **Dashboard needs a sign-in:** visitors get a sign-in page. The admin password works there, and so does an
+  optional **viewer password**, which opens the dashboard but never the settings. Use it for family or a shared screen.
+- **View links:** for a wall tablet or a Home Assistant *webpage* card, where cookies don't work. A link carries
+  its own token, can only view, shows when it was last used, and can be revoked. Add `?embed` to hide the header.
+  Treat a link like a password: anyone who has it can see the dashboard.
+- **Login proxy (single sign-on):** behind Authelia, Authentik or oauth2-proxy, Pulse can trust the user header
+  the proxy sends (default `Remote-User`). It only trusts it from the proxy addresses you list. Users you name
+  can also change settings; everyone else the proxy lets in can only view. Make sure Pulse is reachable only
+  through the proxy.
+- **Under a sub-path:** all pages use relative links, so a proxy can serve Pulse at e.g. `https://example.org/pulse/`.
+  The proxy must strip the prefix: for nginx, `location /pulse/ { proxy_pass http://192.168.1.60/; proxy_buffering off; }`.
+  Turning buffering off keeps the live updates flowing.
+
+`/healthz` stays open for uptime monitors. Behind a sign-in it only says whether each part is OK, without error details.
+
 ## Settings page and admin password
 
-Viewing the dashboard stays open as before. Changing anything on `/settings` needs the admin password.
+Changing anything on `/settings` needs the admin password (or a login-proxy user you made an admin).
 - **Storage:** the password is stored hashed (PBKDF2), and a sign-in lasts 30 days.
 - **Secrets:** tokens, passwords, the Discord webhook URL and webhook headers are never shown back in full.
 - **Attempts:** sign-ins are limited to 5 a minute.
@@ -255,7 +275,7 @@ Precedence: guest tags, then `overrides.json`, then discovery, then a guess from
 notifications), `PULSE_PORT`, `PULSE_BIND`, `PULSE_LOG`. Restart after editing:
 `systemctl restart homelab-pulse`.
 
-Routes: `/` UI, `/settings`, `/api/state` JSON snapshot, `/api/stream` Server-Sent Events,
+Routes: `/` UI, `/settings`, `/login`, `/api/state` JSON snapshot, `/api/stream` Server-Sent Events,
 `/api/history/<vmid|node>`, `/api/rrd/<vmid|node>?range=day|week|month|year`, `/api/uptime`,
 `/healthz` (503 when Proxmox, the checks or discovery are failing). The settings API (`/api/settings`, `/api/mutes`,
 `/api/test-notify`, …) needs a signed-in session and the `X-Pulse-Request: 1` header.
@@ -290,8 +310,9 @@ Python 3.11+ standard library only. There's nothing to `pip install`.
   Revoke it on its own with `pveum user token remove pulse@pve ct<vmid>`.
 - **It port-scans your guests**, as described above, and only the addresses Proxmox reports for them. Tag
   a guest `pulse-noscan` to opt it out.
-- **No login on the dashboard.** Anyone who can reach it sees guest names, addresses, services and backup
-  state. Keep it on your LAN or a VPN such as Tailscale. Don't expose it to the internet.
+- **The dashboard is open unless you turn on a sign-in** (see "Who can see the dashboard"). Open, anyone who can
+  reach it sees guest names, addresses, services and backup state. Even with a sign-in, prefer your LAN, a VPN
+  such as Tailscale, or a login proxy over exposing Pulse to the internet directly.
 - Nothing leaves your network except the Internet check (a TCP connect to 1.1.1.1:443, which you can turn off)
   and the alerts you configure.
 - Text taken from scanned services (page titles, headers) is shortened and always shown escaped.

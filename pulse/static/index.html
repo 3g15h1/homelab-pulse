@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Pulse">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/icon-180.png">
-<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
 <style>
   :root {
     --bg: #09090b; --card: #131316; --card2: #18181c; --line: rgba(255,255,255,.06); --line2: rgba(255,255,255,.1);
@@ -194,7 +194,8 @@
     <div class="hdr-right">
       <span class="num" id="clock"></span>
       <span class="live" id="live"><i></i><span>connecting</span></span>
-      <a class="gear" href="/settings" title="Alerts &amp; settings" aria-label="Alerts and settings">⚙</a>
+      <a class="gear" href="settings" title="Alerts &amp; settings" aria-label="Alerts and settings">⚙</a>
+      <button class="gear" id="signOut" hidden title="Sign out" aria-label="Sign out" style="background:none;border:0;font:inherit;cursor:pointer">⎋</button>
     </div>
   </header>
 
@@ -228,6 +229,10 @@
 </div>
 
 <script>
+// Relative URLs (so Pulse works under a proxy's sub-path) and a view link's token carried along:
+// kiosks and iframes can't rely on cookies.
+const VIEW_TOKEN = new URLSearchParams(location.search).get("token");
+const withToken = (path) => VIEW_TOKEN ? `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(VIEW_TOKEN)}` : path;
 "use strict";
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
@@ -285,7 +290,7 @@ let lastMsg = 0;
 let mapKey = "";               // node set + orientation; rebuild the SVG when it changes
 let geom = { W: 1000, H: 620, nodes: {}, links: [] };
 let range = "live";            // drawer history range: live (in memory) or an RRD range from Proxmox
-let U = {};                    // uptime per check id, from /api/uptime
+let U = {};                    // uptime per check id, from api/uptime
 
 /* ---------- map layout ---------- */
 // Keys: "internet", "router", "node:<name>" for Proxmox nodes, the VMID (number) for guests.
@@ -532,7 +537,7 @@ async function renderDrawer() {
   const g = isNode ? null : S.guests.find((x) => String(x.vmid) === String(key));
   let hist = null;
   const hkey = encodeURIComponent(isNode ? (n?.name ?? "") : key);
-  try { const r = await fetch(range === "live" ? `/api/history/${hkey}` : `/api/rrd/${hkey}?range=${range}`); if (r.ok) hist = await r.json(); }
+  try { const r = await fetch(withToken(range === "live" ? `api/history/${hkey}` : `api/rrd/${hkey}?range=${range}`)); if (r.ok) hist = await r.json(); }
   catch { /* keep going without sparklines */ }
   if (key !== selected) return;
   if (isNode ? !n : !g) { body.innerHTML = '<span class="muted">Gone.</span>'; return; }
@@ -575,7 +580,7 @@ function upTxt(id) {
   const v = u["7d"], t = v >= 99.95 ? "100" : v >= 99 ? v.toFixed(2).replace(/0$/, "") : v.toFixed(1);
   return `<span class="up7" title="24 h ${u["24h"] ?? "—"} % · 7 d ${u["7d"]} % · 30 d ${u["30d"] ?? "—"} %">${t} % · 7 d</span> · `;
 }
-async function loadUptime() { try { const r = await fetch("/api/uptime"); if (r.ok) { U = await r.json(); if (S) renderServices(); } } catch { /* next time */ } }
+async function loadUptime() { try { const r = await fetch(withToken("api/uptime")); if (r.ok) { U = await r.json(); if (S) renderServices(); } } catch { /* next time */ } }
 loadUptime(); setInterval(loadUptime, 300000);
 
 function renderAttention() {
@@ -696,7 +701,7 @@ function render() {
 /* ---------- live connection ---------- */
 function setLive(on, text) { $("live").classList.toggle("on", on); $("live").lastElementChild.textContent = text; }
 function connect() {
-  const es = new EventSource("/api/stream");
+  const es = new EventSource(withToken("api/stream"));
   es.onmessage = (m) => { S = JSON.parse(m.data); lastMsg = Date.now(); setLive(true, "live"); render(); };
   es.onerror = () => setLive(false, "reconnecting");
 }
@@ -704,7 +709,13 @@ setInterval(() => {
   $("clock").textContent = new Date().toLocaleTimeString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
   if (lastMsg && Date.now() - lastMsg > 30000) setLive(false, "stale");
 }, 1000);
-fetch("/api/state").then((r) => r.json()).then((s) => { if (!S) { S = s; render(); } }).catch(() => {});
+fetch("api/session").then((r) => r.json()).then((s) => {      // viewers signed in with a password get a sign-out
+  if (s.login_required && s.via === "session") {
+    $("signOut").hidden = false;
+    $("signOut").onclick = async () => { await fetch("api/logout", { method: "POST", headers: { "X-Pulse-Request": "1" } }); location.replace("login"); };
+  }
+}).catch(() => {});
+fetch(withToken("api/state")).then((r) => { if (r.status === 401) location.replace("login"); return r.json(); }).then((s) => { if (!S) { S = s; render(); } }).catch(() => {});
 connect();
 </script>
 </body>
