@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.0 — 2026-10-26
+
+- **AI assistants can read the lab (MCP).** `POST /mcp` speaks the Model Context Protocol (Streamable HTTP), so
+  an assistant such as Hermes Agent, Claude Desktop or Open WebUI can answer "is anything down?", "did last
+  night's backups work?" or "what's using the most memory?" from live data. Eight tools: `lab_overview`,
+  `list_guests`, `guest_details`, `health_checks`, `alerts` (with early warnings), `backups`, `recent_events` and
+  `storage_and_disks`. They are **read-only**: they show what the dashboard shows and can't change anything.
+- Access follows the dashboard: open while the dashboard is open; with a dashboard sign-in, use a **view link**
+  as a Bearer token. Requests must be JSON, and an `Origin` header from another site is refused.
+
 ## 1.7.0 — 2026-10-16
 
 - **Add separate Proxmox hosts on the settings page** (Settings → Proxmox hosts). Paste the `pulse-host:` line

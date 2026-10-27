@@ -308,6 +308,24 @@ Python 3.11+ standard library only. There's nothing to `pip install`.
    `/etc/homelab-pulse/hosts/gpu.json` (mode 640, group pulse) and that host's CA in `gpu-ca.pem` next to it.
    Give every host its own `slot` number and never reuse one: guests are keyed by it.
 
+## AI assistants (MCP)
+
+Pulse has a built-in [MCP](https://modelcontextprotocol.io) server, so an AI assistant can answer questions
+about the lab from the same live data as the dashboard: "is anything down?", "when did the last backup of
+nextcloud run?", "which disk is filling up?".
+
+- **Address:** `http://<pulse>/mcp` (Streamable HTTP). Add it as an HTTP MCP server in your assistant.
+- **Tools** (all read-only): `lab_overview`, `list_guests`, `guest_details`, `health_checks`, `alerts`,
+  `backups`, `recent_events`, `storage_and_disks`. Nothing an assistant does through them can change the lab.
+- **Access:** the same rule as the dashboard. If the dashboard is open, so are the tools. If it needs a sign-in,
+  create a view link (Settings → Access) and give the assistant its token as `Authorization: Bearer <token>`.
+
+Example for an assistant that reads an MCP config file:
+
+```json
+{"mcpServers": {"homelab-pulse": {"type": "http", "url": "http://192.168.1.60/mcp"}}}
+```
+
 ## Security and privacy
 
 - **Read-only.** The token has the PVEAuditor role. Pulse can see the lab but can't change anything.

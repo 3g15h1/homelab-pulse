@@ -2,6 +2,7 @@
 """Homelab Pulse: a live, self-discovering map of a Proxmox homelab. Python stdlib only.
 
 Routes (viewers):  /  (UI, ?embed hides header/footer)  /api/state  /api/stream (SSE)
+                   POST /mcp (read-only MCP tools for AI assistants; a view link works as a Bearer token)
                    /api/history/<vmid|node>  /api/rrd/<vmid|node>?range=  /api/uptime
                    Open to everyone unless the dashboard needs a login (settings: access.dashboard); then
                    a session cookie, a view link (?token=) or a trusted proxy's user header is needed.
@@ -29,6 +30,7 @@ import demo
 import discover
 import gate_client
 import heal as heal_mod
+import mcp
 import recipes as recipes_mod
 import notify
 import probes
@@ -172,7 +174,10 @@ def make_handler(collector):
             user, role = auth.proxy_user(settings_mod.load(st)["access"]["proxy"], self.client_address[0], self.headers)
             if role:
                 return role, f"proxy:{user}"
-            token = urllib.parse.parse_qs(self.path.partition("?")[2]).get("token", [None])[0] or self.headers.get("X-Pulse-Token")
+            bearer = (self.headers.get("Authorization") or "").partition(" ")
+            token = (urllib.parse.parse_qs(self.path.partition("?")[2]).get("token", [None])[0]
+                     or self.headers.get("X-Pulse-Token")
+                     or (bearer[2].strip() if bearer[0].lower() == "bearer" else None))
             if token and auth.check_view_token(st, token, collector.clock()):
                 return "viewer", "link"
             return None, None
@@ -229,8 +234,30 @@ def make_handler(collector):
 
         # -- admin API --
 
+        def _mcp(self):
+            """MCP for AI assistants: read-only tools over the dashboard snapshot (see mcp.py). Same access
+            rule as the dashboard. A browser page on another site can't call it: it must send JSON, and an
+            Origin header, when present, must match this host (MCP's DNS-rebinding guard)."""
+            origin = self.headers.get("Origin")
+            if origin and urllib.parse.urlparse(origin).netloc != (self.headers.get("Host") or ""):
+                raise _HttpError(403, "cross-origin requests are not allowed")
+            if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+                raise _HttpError(415, "send JSON-RPC as application/json")
+            self._need_view()
+            msg = self._body()
+            replies = [r for r in (mcp.handle(m, collector.snapshot, VERSION)
+                                   for m in (msg if isinstance(msg, list) else [msg])) if r is not None]
+            if not replies:
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return None
+            return self._send(200, replies if isinstance(msg, list) else replies[0])
+
         def _post(self):
             path = urllib.parse.unquote(self.path.split("?", 1)[0])
+            if path == "/mcp":
+                return self._mcp()
             m = re.fullmatch(r"/api/heal/run/([A-Za-z0-9_.-]{1,120})", path)
             if m:                                 # "Run fix" from a phone notification: the token is the auth
                 ip = self.client_address[0]
@@ -442,6 +469,8 @@ def make_handler(collector):
 
         def _get(self):
             path, _, query = self.path.partition("?")
+            if path == "/mcp":                    # Streamable HTTP without the optional SSE stream
+                return self._send(405, {"error": "POST JSON-RPC to /mcp"})
             if path in ("/api/settings", "/api/deliveries", "/api/mutes", "/api/access", "/api/hosts", "/api/update"):
                 return self._get_admin(path)
             if path == "/api/heal":
