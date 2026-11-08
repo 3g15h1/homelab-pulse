@@ -482,6 +482,7 @@ const WARN = {
   backup_stale: ["Guest without a recent backup", [["hours", "stale after (hours)"]]],
   node_memory: ["Node memory high", [["pct", "above (%)"], ["minutes", "for (minutes)"]]],
   ct_disk: ["Container disk filling up", [["warn_pct", "warn above (%)"], ["crit_pct", "critical above (%)"]]],
+  vm_disk: ["VM disk filling up (guest agent)", [["warn_pct", "warn above (%)"], ["crit_pct", "critical above (%)"]]],
   zfs_health: ["ZFS pool unhealthy", []],
   backup_storage_full: ["Backup storage filling up", [["warn_days", "warn when full within (days)"], ["crit_days", "critical when full within (days)"], ["warn_pct", "or above (%)"], ["crit_pct", "critical above (%)"]]],
   pve_updates: ["Proxmox updates pending (needs the Sys.Modify token: install.sh --with-updates)", []],

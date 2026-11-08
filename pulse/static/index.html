@@ -558,7 +558,7 @@ async function renderDrawer() {
     ["Status", g.running ? "running" : esc(g.status)], ["Address", esc((g.ips && g.ips.length ? g.ips : [g.ip || "—"]).join(", "))],
     ["Node", esc(g.node) + (g.host && g.host !== g.node ? ` <span class="faint">on host ${esc(g.host)}</span>` : "")], ["Type", g.type === "qemu" ? "VM" : "Container"],
     ["CPU", `${pct(g.cpu)} of ${g.cores} core${g.cores === 1 ? "" : "s"}`], ["Memory", `${fmtBytes(g.mem)} / ${fmtBytes(g.maxmem)}`],
-    ["Disk", !g.maxdisk ? "—" : g.disk ? `${fmtBytes(g.disk)} / ${fmtBytes(g.maxdisk)}` : `${fmtBytes(g.maxdisk)} allocated`], ["Network", `↓ ${fmtRate(g.net_in)}  ↑ ${fmtRate(g.net_out)}`],
+    ["Disk", g.fs && g.fs.length ? fsRows(g.fs) : !g.maxdisk ? "—" : g.disk ? `${fmtBytes(g.disk)} / ${fmtBytes(g.maxdisk)}` : `${fmtBytes(g.maxdisk)} allocated`], ["Network", `↓ ${fmtRate(g.net_in)}  ↑ ${fmtRate(g.net_out)}`],
     ["Uptime", fmtUp(g.uptime)], ["Last backup", bk?.ts ? `${ago(bk.ts, S.now)} · ${fmtBytes(bk.size)}` : "none yet"],
     ...(g.services && g.services.length ? [["Services", g.services.map((x) => `${esc(x.product)} <span class="faint">:${x.port}</span>`).join("<br>")]] : []),
     ...(g.tags && g.tags.length ? [["Tags", g.tags.map(esc).join(", ")]] : []),
@@ -600,6 +600,14 @@ function renderAttention() {
 function storageRows(list) {
   return list.map((s) => { const f = s.used / (s.total || 1);
     return `<div class="row mini"><span>${esc(s.id)}</span><span class="muted num">${fmtBytes(s.used)} / ${fmtBytes(s.total)}</span></div><div class="bar${f > 0.85 ? " hi" : ""}"><i style="width:${(f * 100).toFixed(1)}%"></i></div>`; }).join("");
+}
+// filesystems inside a VM (guest agent): one line each, amber/red past the VM-disk warning levels
+function fsRows(fss) {
+  const w = S.vm_disk || { warn_pct: 90, crit_pct: 97 };
+  return fss.map((f) => { const p = f.used / (f.total || 1) * 100;
+    const col = p > w.crit_pct ? "var(--bad)" : p > w.warn_pct ? "var(--warn)" : "";
+    return `${fss.length > 1 ? `<span class="faint">${esc(f.mount)}</span> ` : ""}<span style="${col ? `color:${col}` : ""}">${fmtBytes(f.used)} / ${fmtBytes(f.total)} · ${Math.round(p)} %</span>`;
+  }).join("<br>");
 }
 function nodeBlock(n, multi) {
   const hostTxt = n.host && n.host !== n.name ? ` <span class="faint" style="font-weight:450">host ${esc(n.host)}</span>` : "";

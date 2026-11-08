@@ -42,6 +42,7 @@ normally once the node is back if they're still broken. Nothing is dropped.
 | Guest without a recent backup | Last successful backup per guest | stale after (hours) |
 | Node memory high | Sustained memory pressure | % for (minutes) |
 | Container disk filling up | LXC rootfs usage | warn/critical % |
+| VM disk filling up | filesystems inside a VM, from the QEMU guest agent (`get-fsinfo`; PVEAuditor can read it on PVE 9) | warn/critical % |
 | Proxmox updates pending | Package updates per node | on/off, **off by default** |
 
 The Proxmox-update check needs the API token to have `Sys.Modify`, which the default

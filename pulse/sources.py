@@ -80,6 +80,11 @@ class PveClient:
     def agent_interfaces(self, node, vmid):
         return self._get(f"/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces")
 
+    def agent_fsinfo(self, node, vmid):
+        """Filesystems inside a VM, from the QEMU guest agent. Readable with PVEAuditor on PVE 9
+        (VM.GuestAgent.Audit); PVE 8 needs VM.Monitor, like agent_interfaces."""
+        return self._get(f"/nodes/{node}/qemu/{vmid}/agent/get-fsinfo")
+
     def disks(self, node):
         return self._get(f"/nodes/{node}/disks/list")
 
@@ -373,6 +378,10 @@ class MultiPve:
     def agent_interfaces(self, node, vmid):
         c, n, v = self._guest(node, vmid)
         return c.agent_interfaces(n, v)
+
+    def agent_fsinfo(self, node, vmid):
+        c, n, v = self._guest(node, vmid)
+        return c.agent_fsinfo(n, v)
 
     def rrd(self, node, kind, vmid, timeframe):
         c, n, v = self._guest(node, vmid)

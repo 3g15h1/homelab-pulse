@@ -192,6 +192,7 @@ Problems that aren't outages yet. They show in an **Attention** strip on the das
 | Guest without a recent backup | no successful backup in 48 h (guests in a backup job) |
 | Node memory high | above 90 % for 15 minutes |
 | Container disk filling up | above 90 % (critical: 97 %) |
+| VM disk filling up (guest agent) | above 90 % (critical: 97 %) |
 
 The storage forecast uses **Proxmox's own history** (its RRD database), so it works from the first minute.
 It only warns about a steady trend, not a one-off copy.
