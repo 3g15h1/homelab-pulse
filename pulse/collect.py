@@ -130,7 +130,7 @@ def build_disks(disks):
     return out
 
 
-FS_SKIP = {"squashfs", "iso9660", "tmpfs", "devtmpfs", "overlay", "ramfs", "proc", "sysfs", "cgroup", "cgroup2",
+FS_SKIP = {"squashfs", "erofs", "iso9660", "tmpfs", "devtmpfs", "overlay", "ramfs", "proc", "sysfs", "cgroup", "cgroup2",
            "udf", "nsfs", "autofs", "fuse.lxcfs", "fuse.snapfuse"}
 FS_MIN_BYTES = 128 * 1024 ** 2       # EFI and appliance boot partitions: too small to be worth a row
 

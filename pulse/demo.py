@@ -214,7 +214,7 @@ class DemoPve:
                     "used-bytes": int(used), "disk": [{"bus-type": "scsi", "dev": f"/dev/{name}"}]}
         if g[2] == "homeassistant":   # Home Assistant OS: read-only root, data partition bind-mounted many times
             data = size - 1.2 * GIB
-            return {"result": [fs("sda8", "/", "squashfs", 0.3 * GIB, 0.3 * GIB),
+            return {"result": [fs("sda8", "/", "erofs", 0.22 * GIB, 0.22 * GIB),
                                fs("sda1", "/mnt/boot", "vfat", 32 * MIB, 9 * MIB),
                                fs("sda8", "/mnt/data", "ext4", data, data * 0.41),
                                fs("sda8", "/mnt/data/supervisor/homeassistant", "ext4", data, data * 0.41),

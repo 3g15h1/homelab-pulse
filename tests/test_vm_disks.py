@@ -18,6 +18,7 @@ class FilesystemTests(unittest.TestCase):
     def test_keeps_real_filesystems_once_each(self):
         data = {"result": [
             fs("sda8", "/", "squashfs", GB // 3, GB // 3),                 # read-only appliance root
+            fs("sda5", "/", "erofs", GB // 4, GB // 4),                    # same on newer Home Assistant OS
             fs("sda1", "/mnt/boot", "vfat", 32 * 1024 ** 2, 1),            # too small to matter
             fs("sda8", "/mnt/data/supervisor", "ext4", 30 * GB, 12 * GB),  # bind mount of the same device
             fs("sda8", "/mnt/data", "ext4", 30 * GB, 12 * GB),
